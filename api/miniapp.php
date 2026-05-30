@@ -55,6 +55,14 @@ if ($usercheck['User_Status'] == "block") {
 $errorreport = select("topicid", "idreport", "report", "errorreport", "select")['idreport'];
 $porsantreport = select("topicid", "idreport", "report", "porsantreport", "select")['idreport'];
 $buyreport = select("topicid", "idreport", "report", "buyreport", "select")['idreport'];
+if ($tokencheck === '' || $tokencheck == null) {
+    echo json_encode([
+        'status' => false,
+        'msg' => "Token invalid",
+    ]);
+    http_response_code(403);
+    return;
+}
 if (!$usercheck || $usercheck['token'] != $tokencheck) {
     echo json_encode([
         'status' => false,
