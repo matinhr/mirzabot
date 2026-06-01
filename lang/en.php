@@ -2606,7 +2606,7 @@ We hope you had a good experience with the ease and speed of your service. If yo
                         'bulkPurchaseDisabled' => '❌ This section is currently disabled',
                         'bulkPurchaseMinBalance' => '❌ For bulk purchase you must have at least {PaySetting} Toman balance.',
                         'depositAmountRange' => '❌ The minimum deposit amount for this payment method must be {mainbalance} and the maximum {maxbalance} Toman',
-                        'depositAmountRangePlisio' => '❌ The minimum deposit amount for this payment method must be {mainbalance}plisio and the maximum {maxbalance}plisio Toman',
+                        'depositAmountRangePlisio' => '❌ The minimum deposit amount for this payment method must be {mainbalance} and the maximum {maxbalance} Toman',
                         'bankCardRetrieveError' => '❌ An internal error occurred while retrieving the bank card. Please try again later.',
                         'noActiveBankCard' => '❌ No active bank card was found for this payment method. Please try again later or contact support.',
                         'receiptCooldown' => '❗ You sent a receipt in the last 2 minutes. Please send a new receipt in 2 minutes.',
