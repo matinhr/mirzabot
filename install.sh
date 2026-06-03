@@ -7,7 +7,6 @@ fi
 
 INSTALL_LOG="/tmp/mirza_install.log"
 
-# Pretty section header
 print_header() {
     echo ""
     echo -e "\033[1;34m╭────────────────────────────────────────────────╮\033[0m"
@@ -15,9 +14,6 @@ print_header() {
     echo -e "\033[1;34m╰────────────────────────────────────────────────╯\033[0m"
 }
 
-# Run a command quietly while showing an animated spinner.
-# Output is hidden (sent to $INSTALL_LOG) so the screen stays clean.
-# Usage: run_step "Message shown to user" "shell command to run"
 run_step() {
     local msg="$1"
     local cmd="$2"
@@ -44,158 +40,529 @@ run_step() {
     return "$rc"
 }
 
-# Show the tail of the log when a step fails
 show_step_error() {
     echo -e "\033[1;31m──────────────── Error details ─────────────────\033[0m"
     tail -n 20 "$INSTALL_LOG" 2>/dev/null
     echo -e "\033[1;31m─────────────────────────────────────────────────\033[0m"
 }
 
-# Function to update the script itself automatically
+# ── Menu UI helpers ──────────────────────────────────────────
+C_BORDER=$'\033[1;36m'; C_TITLE=$'\033[1;37m'; C_DIM=$'\033[0;37m'
+C_KEY=$'\033[1;33m';    C_TXT=$'\033[0;37m';   C_OK=$'\033[1;32m'
+C_BAD=$'\033[1;31m';    C_WARN=$'\033[1;33m';  C_PROMPT=$'\033[1;36m'
+CR=$'\033[0m'
+UI_W=52   # width of horizontal rules (no right border = never misaligns)
+
+_repeat() { local ch="$1" n="$2" out="" i; for ((i=0;i<n;i++)); do out+="$ch"; done; printf '%s' "$out"; }
+# Horizontal rules (left-aligned, no right edge to drift)
+_rule()   { printf "  ${C_BORDER}%s${CR}\n" "$(_repeat "─" "$UI_W")"; }
+_drule()  { printf "  ${C_BORDER}%s${CR}\n" "$(_repeat "━" "$UI_W")"; }
+# Banner: rules + left-aligned title (no full box)
+banner()  {
+    echo
+    _drule
+    printf "  ${C_OK}▌${CR} ${C_TITLE}MIRZA${CR}  ${C_DIM}— VPN Subscription Management${CR}\n"
+    _drule
+}
+# Menu item row: [n] label  (left-aligned, no right border)
+_mi()     { printf "    ${C_KEY}[%s]${CR}  ${C_TXT}%b${CR}\n" "$1" "$2"; }
+
+# ── DNS auto-fix (used early, before any download) ───────────
+RESOLV="/etc/resolv.conf"
+DNS_SERVERS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
+
+dns_works() {
+    getent hosts github.com       >/dev/null 2>&1 && return 0
+    getent hosts api.telegram.org >/dev/null 2>&1 && return 0
+    return 1
+}
+
+ensure_dns() {
+    dns_works && return 0
+    echo -e "  ${C_WARN}!${CR} ${C_WARN}DNS resolution failed - configuring public DNS...${CR}"
+    if [ -L "$RESOLV" ]; then
+        rm -f "$RESOLV" 2>/dev/null
+    elif [ -f "$RESOLV" ] && [ ! -f "${RESOLV}.mirza.bak" ]; then
+        cp -a "$RESOLV" "${RESOLV}.mirza.bak" 2>/dev/null
+    fi
+    { local d; for d in "${DNS_SERVERS[@]}"; do echo "nameserver $d"; done; } > "$RESOLV" 2>/dev/null
+    if command -v resolvectl >/dev/null 2>&1; then
+        local ifc; ifc=$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')
+        [ -n "$ifc" ] && resolvectl dns "$ifc" "${DNS_SERVERS[@]}" 2>/dev/null || true
+    fi
+    sleep 1
+    dns_works && { echo -e "  ${C_OK}●${CR} ${C_OK}DNS is now working.${CR}"; return 0; }
+    echo -e "  ${C_BAD}●${CR} ${C_BAD}DNS still failing after applying public resolvers.${CR}"
+    return 1
+}
+
+# Ensure /usr/local/bin/mirza points at the master script
+_link_mirza() {
+    local master="$1" link="$2"
+    chmod +x "$master" 2>/dev/null
+    if [ ! -e "$link" ] || [ "$(readlink -f "$link" 2>/dev/null)" != "$(readlink -f "$master" 2>/dev/null)" ]; then
+        ln -sf "$master" "$link"
+    fi
+    chmod +x "$link" 2>/dev/null
+}
+
+# Self-update: every run, fetch the latest script from GitHub, validate it,
+# install it to /root/install.sh, link it into /usr/local/bin, and re-exec.
 function self_update_script() {
     local MASTER_PATH="/root/install.sh"
     local BIN_LINK="/usr/local/bin/mirza"
     local URL="https://raw.githubusercontent.com/mahdiMGF2/mirza_pro/main/install.sh"
     local TEMP_FILE="/tmp/mirza_pro_update.sh"
-    echo -e "\e[33mChecking for updates...\033[0m"
-    wget -q -O "$TEMP_FILE" "$URL"
-    if [ -s "$TEMP_FILE" ]; then
-        if [ -f "$MASTER_PATH" ]; then
-            LOCAL_HASH=$(md5sum "$MASTER_PATH" | awk '{print $1}')
-        else
-            LOCAL_HASH="not_installed"
-        fi
-        REMOTE_HASH=$(md5sum "$TEMP_FILE" | awk '{print $1}')
-        if [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
-            if [ "$LOCAL_HASH" == "not_installed" ]; then
-                echo -e "\e[32mFirst run detected. Installing script to system...\033[0m"
-            else
-                echo -e "\e[32mNew version found! Updating...\033[0m"
-            fi
-            mv "$TEMP_FILE" "$MASTER_PATH"
-            chmod +x "$MASTER_PATH"
-            rm -f "$BIN_LINK"
-            ln -s "$MASTER_PATH" "$BIN_LINK"
-            chmod +x "$BIN_LINK"
-            echo -e "\e[32mProcess updated. Restarting...\033[0m"
-            sleep 1
-            exec bash "$MASTER_PATH" "$@"
-        else
-            echo -e "\e[32mScript is up to date.\033[0m"
-            rm -f "$TEMP_FILE"
-            if [ ! -f "$BIN_LINK" ]; then
-                ln -s "$MASTER_PATH" "$BIN_LINK"
-                chmod +x "$BIN_LINK"
-            fi
-        fi
-    else
-        echo -e "\e[91mWarning: Could not check for updates (Connection failed).\033[0m"
-        if [ ! -f "$MASTER_PATH" ]; then
-             echo -e "\e[91mCritical: Cannot install script for the first time without internet.\033[0m"
-             exit 1
-        fi
+
+    # Make sure DNS works before reaching GitHub
+    ensure_dns >/dev/null 2>&1
+
+    echo -e "\e[33mChecking for the latest script version...\033[0m"
+    rm -f "$TEMP_FILE"
+    curl -fsSL --max-time 15 -o "$TEMP_FILE" "$URL" 2>/dev/null \
+        || wget -q -O "$TEMP_FILE" "$URL" 2>/dev/null
+
+    # Validate the download is a complete, valid bash script (not a 404/HTML/partial)
+    local valid=0
+    if [ -s "$TEMP_FILE" ] \
+       && head -n1 "$TEMP_FILE" | grep -q '^#!/bin/bash' \
+       && grep -q 'process_arguments' "$TEMP_FILE" \
+       && bash -n "$TEMP_FILE" 2>/dev/null; then
+        valid=1
+    fi
+
+    if [ "$valid" -ne 1 ]; then
+        echo -e "\e[91mWarning: could not fetch a valid update (offline / bad download). Using current version.\033[0m"
         rm -f "$TEMP_FILE"
+        if [ ! -f "$MASTER_PATH" ]; then
+            echo -e "\e[91mCritical: cannot install the script for the first time without internet.\033[0m"
+            exit 1
+        fi
+        _link_mirza "$MASTER_PATH" "$BIN_LINK"
+        return 0
+    fi
+
+    local LOCAL_HASH REMOTE_HASH
+    if [ -f "$MASTER_PATH" ]; then
+        LOCAL_HASH=$(md5sum "$MASTER_PATH" | awk '{print $1}')
+    else
+        LOCAL_HASH="not_installed"
+    fi
+    REMOTE_HASH=$(md5sum "$TEMP_FILE" | awk '{print $1}')
+
+    if [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
+        if [ "$LOCAL_HASH" = "not_installed" ]; then
+            echo -e "\e[32mInstalling script to the system...\033[0m"
+        else
+            echo -e "\e[32mNew version found - updating...\033[0m"
+        fi
+        install -m 0755 "$TEMP_FILE" "$MASTER_PATH" 2>/dev/null || { mv "$TEMP_FILE" "$MASTER_PATH"; chmod +x "$MASTER_PATH"; }
+        rm -f "$TEMP_FILE"
+        _link_mirza "$MASTER_PATH" "$BIN_LINK"
+        echo -e "\e[32mUpdated. Restarting with the latest version...\033[0m"
+        sleep 1
+        exec bash "$MASTER_PATH" "$@"
+    fi
+
+    # Already up to date - just make sure it is linked under /usr/local/bin
+    rm -f "$TEMP_FILE"
+    _link_mirza "$MASTER_PATH" "$BIN_LINK"
+    echo -e "\e[32mScript is up to date.\033[0m"
+}
+self_update_script "$@"
+
+# ── Repo / paths ─────────────────────────────────────────────
+BOT_DIR_DEFAULT="/var/www/html/mirzaprobotconfig"
+CONFIG_FILE_DEFAULT="$BOT_DIR_DEFAULT/config.php"
+GIT_REPO="mahdiMGF2/mirza_pro"
+LATEST_CACHE="/tmp/.mirza_latest_version"
+IP_CACHE="/tmp/.mirza_server_ip"
+
+# Colored status dot
+_dot() {
+    case "$1" in
+        ok)   printf "${C_OK}●${CR}"  ;;
+        bad)  printf "${C_BAD}●${CR}" ;;
+        warn) printf "${C_WARN}●${CR}";;
+        *)    printf "${C_DIM}●${CR}" ;;
+    esac
+}
+
+# Dashboard section header + key/value row helpers
+_sec() { printf "\n  ${C_KEY}▌${CR} ${C_TITLE}%s${CR}\n" "$1"; _rule; }
+_kv()  { printf "    ${C_DIM}%-11s${CR}${C_BORDER}:${CR} %b${CR}\n" "$1" "$2"; }
+
+# Read the installed version from the source 'version' file
+get_installed_version() {
+    if [ -f "$BOT_DIR_DEFAULT/version" ]; then
+        tr -d ' \t\r\n' < "$BOT_DIR_DEFAULT/version"
+    else
+        echo ""
     fi
 }
-# Execute the update check immediately upon script start
-self_update_script
-# Check SSL certificate status and days remaining
-check_ssl_status() {
-    # First get domain from config file
-    if [ -f "/var/www/html/mirzaprobotconfig/config.php" ]; then
-        domain=$(grep '^\$domainhosts' "/var/www/html/mirzaprobotconfig/config.php" | cut -d"'" -f2 | cut -d'/' -f1)
-        if [ -n "$domain" ] && [ -f "/etc/letsencrypt/live/$domain/cert.pem" ]; then
-            expiry_date=$(openssl x509 -enddate -noout -in "/etc/letsencrypt/live/$domain/cert.pem" | cut -d= -f2)
-            current_date=$(date +%s)
-            expiry_timestamp=$(date -d "$expiry_date" +%s)
-            days_remaining=$(( ($expiry_timestamp - $current_date) / 86400 ))
-            if [ $days_remaining -gt 0 ]; then
-                echo -e "\033[32m✅ SSL Certificate: $days_remaining days remaining (Domain: $domain)\033[0m"
-            else
-                echo -e "\033[31m❌ SSL Certificate: Expired (Domain: $domain)\033[0m"
-            fi
+
+# Get latest version (newest git tag) from GitHub, cached for 1 hour
+get_latest_version() {
+    if [ -f "$LATEST_CACHE" ] && [ $(( $(date +%s) - $(stat -c %Y "$LATEST_CACHE" 2>/dev/null || echo 0) )) -lt 3600 ]; then
+        cat "$LATEST_CACHE"
+        return
+    fi
+    local tags v
+    tags=$(curl -fsSL --max-time 6 "https://api.github.com/repos/${GIT_REPO}/tags" 2>/dev/null)
+    if [ -n "$tags" ]; then
+        if command -v jq >/dev/null 2>&1; then
+            v=$(echo "$tags" | jq -r '.[].name' 2>/dev/null | sort -V | tail -1)
         else
-            echo -e "\033[33m⚠️ SSL Certificate: Not found for domain $domain\033[0m"
+            v=$(echo "$tags" | grep -oE '"name"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)".*/\1/' | sort -V | tail -1)
+        fi
+    fi
+    if [ -n "$v" ]; then
+        echo "$v" > "$LATEST_CACHE"
+        echo "$v"
+    fi
+}
+
+# Print all release tags, newest first (one per line)
+list_tags_desc() {
+    local tags
+    tags=$(curl -fsSL --max-time 8 "https://api.github.com/repos/${GIT_REPO}/tags" 2>/dev/null)
+    [ -z "$tags" ] && return 1
+    if command -v jq >/dev/null 2>&1; then
+        echo "$tags" | jq -r '.[].name' 2>/dev/null | sort -Vr
+    else
+        echo "$tags" | grep -oE '"name"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)".*/\1/' | sort -Vr
+    fi
+}
+
+# Choose which source to download.
+# Sets globals: SRC_ZIP_URL, SRC_LABEL
+# Honors flags ARG_CHANNEL (beta|release|auto) and ARG_VERSION (tag) for non-interactive use.
+# Returns: 0 = chosen, 1 = error, 2 = back to menu
+choose_source() {
+    SRC_ZIP_URL=""; SRC_LABEL=""
+    local beta="https://github.com/${GIT_REPO}/archive/refs/heads/main.zip"
+    local tagbase="https://github.com/${GIT_REPO}/archive/refs/tags"
+
+    # ── Non-interactive (flags) ──────────────────────────────
+    if [ -n "$ARG_VERSION" ]; then
+        # Verify the requested tag actually exists (when the list is reachable)
+        local _avail; _avail=$(list_tags_desc)
+        if [ -n "$_avail" ] && ! echo "$_avail" | grep -qx "$ARG_VERSION"; then
+            echo -e "    ${C_BAD}●${CR} ${C_BAD}Version '${ARG_VERSION}' not found.${CR}"
+            echo -e "    ${C_DIM}Available:${CR} $(echo "$_avail" | tr '\n' ' ')"
+            return 1
+        fi
+        SRC_ZIP_URL="${tagbase}/${ARG_VERSION}.zip"; SRC_LABEL="Release ${ARG_VERSION}"; return 0
+    fi
+    if [ -n "$ARG_CHANNEL" ]; then
+        case "$ARG_CHANNEL" in
+            beta|main)      SRC_ZIP_URL="$beta"; SRC_LABEL="Beta (main)"; return 0 ;;
+            release|auto|latest|stable)
+                local l; l=$(get_latest_version)
+                if [ -n "$l" ]; then SRC_ZIP_URL="${tagbase}/${l}.zip"; SRC_LABEL="Release ${l}";
+                else SRC_ZIP_URL="$beta"; SRC_LABEL="Beta (main)"; fi
+                return 0 ;;
+            *) echo -e "    ${C_BAD}Unknown channel: ${ARG_CHANNEL}${CR}"; return 1 ;;
+        esac
+    fi
+
+    # ── Interactive ──────────────────────────────────────────
+    _sec "Select version"
+    _mi "1" "Automatic  ${C_DIM}(latest stable release)${CR}"
+    _mi "2" "Choose a specific release version"
+    _mi "3" "Beta       ${C_DIM}(latest main branch - may be unstable)${CR}"
+    _mi "0" "Back to menu"
+    echo ""
+    printf "  ${C_PROMPT}❯${CR} Select ${C_DIM}[0-3]${CR}: "
+    local S; read -r S
+    case "$S" in
+        0) return 2 ;;
+        1)
+            local l; l=$(get_latest_version)
+            if [ -n "$l" ]; then SRC_ZIP_URL="${tagbase}/${l}.zip"; SRC_LABEL="Release ${l}";
+            else
+                echo -e "    ${C_WARN}Could not detect latest release; falling back to Beta.${CR}"
+                SRC_ZIP_URL="$beta"; SRC_LABEL="Beta (main)"
+            fi
+            return 0 ;;
+        2)
+            echo ""
+            echo -e "  ${C_DIM}Fetching available versions...${CR}"
+            local TAGS=(); mapfile -t TAGS < <(list_tags_desc)
+            if [ "${#TAGS[@]}" -eq 0 ]; then
+                echo -e "    ${C_BAD}●${CR} ${C_BAD}Could not fetch release list (offline or rate-limited).${CR}"
+                return 1
+            fi
+            _sec "Available versions"
+            local i=1 t
+            for t in "${TAGS[@]}"; do
+                if [ "$i" -eq 1 ]; then _mi "$i" "${t}  ${C_OK}(latest)${CR}"; else _mi "$i" "$t"; fi
+                i=$((i+1))
+            done
+            _mi "0" "Back to menu"
+            echo ""
+            printf "  ${C_PROMPT}❯${CR} Select version ${C_DIM}[default: 1]${CR}: "
+            local V; read -r V; [ -z "$V" ] && V=1
+            [ "$V" = "0" ] && return 2
+            if ! [[ "$V" =~ ^[0-9]+$ ]] || [ "$V" -lt 1 ] || [ "$V" -gt "${#TAGS[@]}" ]; then
+                echo -e "    ${C_BAD}Invalid selection.${CR}"; return 1
+            fi
+            local c="${TAGS[$((V-1))]}"
+            SRC_ZIP_URL="${tagbase}/${c}.zip"; SRC_LABEL="Release ${c}"
+            return 0 ;;
+        3) SRC_ZIP_URL="$beta"; SRC_LABEL="Beta (main)"; return 0 ;;
+        *) echo -e "    ${C_BAD}Invalid selection.${CR}"; return 1 ;;
+    esac
+}
+
+# Get public server IP, cached for 1 hour (falls back to local IP)
+get_server_ip() {
+    if [ -f "$IP_CACHE" ] && [ $(( $(date +%s) - $(stat -c %Y "$IP_CACHE" 2>/dev/null || echo 0) )) -lt 3600 ]; then
+        cat "$IP_CACHE"
+        return
+    fi
+    local ip
+    ip=$(curl -fsSL --max-time 4 ifconfig.me 2>/dev/null)
+    [ -z "$ip" ] && ip=$(curl -fsSL --max-time 4 https://api.ipify.org 2>/dev/null)
+    [ -z "$ip" ] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -z "$ip" ] && ip="n/a"
+    echo "$ip" > "$IP_CACHE"
+    echo "$ip"
+}
+
+# ── Dashboard sections ───────────────────────────────────────
+version_section() {
+    local inst latest
+    inst=$(get_installed_version)
+    latest=$(get_latest_version)
+    _sec "Version"
+    if [ -n "$inst" ]; then
+        _kv "Installed" "$(_dot ok) ${C_OK}${inst}${CR}"
+    else
+        _kv "Installed" "$(_dot bad) ${C_BAD}not installed${CR}"
+    fi
+    if [ -n "$latest" ]; then
+        if [ -n "$inst" ] && [ "$inst" = "$latest" ]; then
+            _kv "Latest" "$(_dot ok) ${C_OK}${latest}${CR} ${C_DIM}(up to date)${CR}"
+        elif [ -n "$inst" ]; then
+            _kv "Latest" "$(_dot warn) ${C_WARN}${latest}${CR} ${C_WARN}(update available!)${CR}"
+        else
+            _kv "Latest" "$(_dot warn) ${C_DIM}${latest}${CR}"
         fi
     else
-        echo -e "\033[33m⚠️ Cannot check SSL: Config file not found\033[0m"
+        _kv "Latest" "$(_dot warn) ${C_DIM}unknown (offline)${CR}"
     fi
+    _kv "Channel" "${C_DIM}t.me/mirzapanel${CR}"
+    _kv "Group" "${C_DIM}t.me/mirzapanelgroup${CR}"
 }
-# Check bot installation status
-check_bot_status() {
-    if [ -f "/var/www/html/mirzaprobotconfig/config.php" ]; then
-        echo -e "\033[32m✅ Bot is installed\033[0m"
-        check_ssl_status
+
+bot_section() {
+    SSL_DOMAIN=""
+    _sec "Bot Status"
+    if [ ! -f "$CONFIG_FILE_DEFAULT" ]; then
+        _kv "State" "$(_dot bad) ${C_BAD}not installed${CR}"
+        return
+    fi
+    _kv "State" "$(_dot ok) ${C_OK}installed${CR}"
+    SSL_DOMAIN=$(grep '^\$domainhosts' "$CONFIG_FILE_DEFAULT" | cut -d"'" -f2 | cut -d'/' -f1)
+    if [ -n "$SSL_DOMAIN" ] && [ -f "/etc/letsencrypt/live/$SSL_DOMAIN/cert.pem" ]; then
+        local expiry days
+        expiry=$(openssl x509 -enddate -noout -in "/etc/letsencrypt/live/$SSL_DOMAIN/cert.pem" 2>/dev/null | cut -d= -f2)
+        days=$(( ( $(date -d "$expiry" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+        if [ "$days" -gt 14 ]; then
+            _kv "SSL" "$(_dot ok) ${C_OK}valid${CR} ${C_DIM}(${days} days left)${CR}"
+        elif [ "$days" -gt 0 ]; then
+            _kv "SSL" "$(_dot warn) ${C_WARN}valid${CR} ${C_DIM}(${days} days left - renew soon)${CR}"
+        else
+            _kv "SSL" "$(_dot bad) ${C_BAD}expired${CR}"
+        fi
     else
-        echo -e "\033[31m❌ Bot is not installed\033[0m"
+        _kv "SSL" "$(_dot warn) ${C_WARN}certificate not found${CR}"
+    fi
+    if [ -n "$SSL_DOMAIN" ]; then
+        _kv "Domain" "${C_DIM}https://${SSL_DOMAIN}${CR}"
+        _kv "phpMyAdmin" "${C_DIM}https://${SSL_DOMAIN}/phpmyadmin${CR}"
     fi
 }
-# Display Logo
+
+# Read the Telegram webhook using the bot token from config.php.
+# Prints webhook URL / pending count, and surfaces any error message.
+webhook_section() {
+    _sec "Webhook"
+    if [ ! -f "$CONFIG_FILE_DEFAULT" ]; then
+        _kv "Status" "$(_dot warn) ${C_DIM}n/a (bot not installed)${CR}"
+        return
+    fi
+    local token info ok url pending err errdate apierr when
+    token=$(grep '^\$APIKEY' "$CONFIG_FILE_DEFAULT" | cut -d"'" -f2)
+    if [ -z "$token" ]; then
+        _kv "Status" "$(_dot bad) ${C_BAD}token not found in config.php${CR}"
+        return
+    fi
+    info=$(curl -fsSL --max-time 8 "https://api.telegram.org/bot${token}/getWebhookInfo" 2>/dev/null)
+    if [ -z "$info" ]; then
+        _kv "Status" "$(_dot bad) ${C_BAD}cannot reach Telegram API${CR}"
+        printf "    ${C_BAD}Error:${CR} request to api.telegram.org failed (network/timeout).\n"
+        return
+    fi
+    if command -v jq >/dev/null 2>&1; then
+        ok=$(echo "$info"     | jq -r '.ok')
+        url=$(echo "$info"    | jq -r '.result.url // empty')
+        pending=$(echo "$info"| jq -r '.result.pending_update_count // 0')
+        err=$(echo "$info"    | jq -r '.result.last_error_message // empty')
+        errdate=$(echo "$info"| jq -r '.result.last_error_date // empty')
+        apierr=$(echo "$info" | jq -r '.description // empty')
+    else
+        ok=$(echo "$info"     | grep -oE '"ok":[[:space:]]*(true|false)' | grep -oE '(true|false)')
+        url=$(echo "$info"    | grep -oE '"url":[[:space:]]*"[^"]*"' | sed -E 's/.*"url":[[:space:]]*"([^"]*)".*/\1/')
+        pending=$(echo "$info"| grep -oE '"pending_update_count":[[:space:]]*[0-9]+' | grep -oE '[0-9]+$')
+        err=$(echo "$info"    | grep -oE '"last_error_message":[[:space:]]*"[^"]*"' | sed -E 's/.*"last_error_message":[[:space:]]*"([^"]*)".*/\1/')
+        errdate=$(echo "$info"| grep -oE '"last_error_date":[[:space:]]*[0-9]+' | grep -oE '[0-9]+$')
+        apierr=$(echo "$info" | grep -oE '"description":[[:space:]]*"[^"]*"' | sed -E 's/.*"description":[[:space:]]*"([^"]*)".*/\1/')
+        [ -z "$pending" ] && pending=0
+    fi
+    # Telegram-level API failure (e.g. invalid/revoked token)
+    if [ "$ok" != "true" ]; then
+        _kv "Status" "$(_dot bad) ${C_BAD}API error${CR}"
+        [ -n "$apierr" ] && printf "    ${C_BAD}Error:${CR} %s\n" "$apierr"
+        return
+    fi
+    # Webhook URL
+    if [ -n "$url" ]; then
+        _kv "URL" "$(_dot ok) ${C_OK}set${CR} ${C_DIM}(${url})${CR}"
+    else
+        _kv "URL" "$(_dot bad) ${C_BAD}not set${CR}"
+    fi
+    _kv "Pending" "${C_DIM}${pending} update(s)${CR}"
+    # Last delivery error reported by Telegram
+    if [ -n "$err" ]; then
+        when=""
+        [ -n "$errdate" ] && when=$(date -d "@$errdate" '+%Y-%m-%d %H:%M' 2>/dev/null)
+        _kv "Last error" "$(_dot bad) ${C_BAD}${err}${CR}"
+        [ -n "$when" ] && _kv "Error time" "${C_DIM}${when}${CR}"
+    else
+        _kv "Last error" "$(_dot ok) ${C_OK}none${CR}"
+    fi
+}
+
+system_section() {
+    local php_v apache_s mysql_s ip os
+    php_v=$(php -r 'echo PHP_VERSION;' 2>/dev/null); [ -z "$php_v" ] && php_v="n/a"
+    apache_s=$(systemctl is-active apache2 2>/dev/null || echo "inactive")
+    mysql_s=$(systemctl is-active mysql 2>/dev/null || echo "inactive")
+    ip=$(get_server_ip)
+    if [ -f /etc/os-release ]; then os=$(. /etc/os-release; echo "$PRETTY_NAME"); else os="Unknown"; fi
+    _svc_row() { if [ "$2" = "active" ]; then _kv "$1" "$(_dot ok) ${C_OK}active${CR}"; else _kv "$1" "$(_dot bad) ${C_BAD}$2${CR}"; fi; }
+    _sec "System"
+    _kv "OS" "${C_DIM}${os}${CR}"
+    _kv "PHP" "${C_DIM}${php_v}${CR}"
+    _svc_row "Apache" "$apache_s"
+    _svc_row "MySQL" "$mysql_s"
+    _kv "Server IP" "${C_DIM}${ip}${CR}"
+}
+
+resources_section() {
+    local mem_t mem_u mem_p disk load cores up
+    mem_t=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+    mem_u=$(free -m 2>/dev/null | awk '/^Mem:/{print $3}')
+    if [ -n "$mem_t" ] && [ "$mem_t" -gt 0 ] 2>/dev/null; then mem_p=$(( mem_u * 100 / mem_t )); else mem_p=0; fi
+    disk=$(df -h / 2>/dev/null | awk 'NR==2{print $3" / "$2"  ("$5")"}')
+    load=$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null)
+    cores=$(nproc 2>/dev/null)
+    up=$(uptime -p 2>/dev/null | sed 's/^up //')
+    [ -z "$up" ] && up="n/a"
+    _sec "Resources"
+    _kv "RAM" "${C_DIM}${mem_u}MB / ${mem_t}MB  (${mem_p}%)${CR}"
+    _kv "Disk" "${C_DIM}${disk}${CR}"
+    _kv "CPU load" "${C_DIM}${load}  (${cores} cores)${CR}"
+    _kv "Uptime" "${C_DIM}${up}${CR}"
+}
+
 function show_logo() {
     clear
-    echo -e "\033[1;34m"
-    echo "================================================================================="
-    echo ""
-    echo "███╗   ███╗██╗██████╗ ███████╗ █████╗  ██████╗  █████╗ ███╗   ██╗███████╗██╗   "
-    echo "████╗ ████║██║██╔══██╗╚══███╔╝██╔══██╗ ██╔══██╗██╔══██╗████╗  ██║██╔════╝██║   "
-    echo "██╔████╔██║██║██████╔╝  ███╔╝ ███████║ ██████╔╝███████║██╔██╗ ██║█████╗  ██║   "
-    echo "██║╚██╔╝██║██║██╔══██╗ ███╔╝  ██╔══██║ ██╔═══╝ ██╔══██║██║╚██╗██║██╔══╝  ██║   "
-    echo "██║ ╚═╝ ██║██║██║  ██║███████╗██║  ██║ ██║     ██║  ██║██║ ╚████║███████╗█████╗"
-    echo "╚═╝     ╚═╝╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚════╝"
-    echo ""
-    echo "================================================================================="
-    echo -e "\033[0m"
-    echo ""
-    echo -e "\033[1;36m+-------------------+---------------------------------------------------+\033[0m"
-    echo -e "\033[1;36m| Version           |\033[0m \033[33m0.4 (Pro)\033[0m"
-    echo -e "\033[1;36m+-------------------+---------------------------------------------------+\033[0m"
-    echo -e "\033[1;36m| Telegram Channel  |\033[0m \033[34mhttps://t.me/mirzapanel\033[0m"
-    echo -e "\033[1;36m+-------------------+---------------------------------------------------+\033[0m"
-    echo -e "\033[1;36m| Telegram Group    |\033[0m \033[34mhttps://t.me/mirzapanelgroup\033[0m"
-    echo -e "\033[1;36m+-------------------+---------------------------------------------------+\033[0m"
-    echo ""
-    echo -e "\033[1;36mInstallation Status:\033[0m"
-    check_bot_status
-    echo ""
+    banner
+    version_section
+    bot_section
+    webhook_section
+    system_section
+    resources_section
 }
-# Display Menu
+
 function show_menu() {
     show_logo
-    echo -e "\033[1;36m1)\033[0m Install Mirza Bot"
-    echo -e "\033[1;36m2)\033[0m Update Mirza Bot"
-    echo -e "\033[1;36m3)\033[0m Remove Mirza Bot"
-    echo -e "\033[1;36m10)\033[0m Migrate Free Old Version  to Free New Version (Beta)"
-    echo -e "\033[1;36m11)\033[0m Exit"
+    _sec "Menu"
+    _mi "1" "Install Mirza"
+    _mi "2" "Update Mirza"
+    _mi "3" "Remove Mirza"
+    _mi "4" "Migrate: Free -> Pro (Beta)"
+    _mi "5" "Help & Parameters"
+    _mi "6" "Exit"
+    _rule
     echo ""
-    read -p "Select an option [1-10]: " option
+    printf  "  ${C_PROMPT}❯${CR} Select an option ${C_DIM}[1-6]${CR}: "
+    read -r option
     case $option in
         1) install_bot ;;
         2) update_bot ;;
         3) remove_bot ;;
-        10) migrate_to_pro ;;
-        11)
-            echo -e "\033[32mExiting...\033[0m"
-            exit 0
-            ;;
-        *)
-            echo -e "\033[31mInvalid option. Please try again.\033[0m"
-            show_menu
-            ;;
+        4) migrate_to_pro ;;
+        5) show_help_screen ;;
+        6) echo -e "\n${C_OK}Exiting...${CR}"; exit 0 ;;
+        *) echo -e "\n${C_BAD}Invalid option. Please try again.${CR}"; sleep 1; show_menu ;;
     esac
 }
-# Check if Marzban is installed
+
+# Clean, styled guide of all commands and parameters
+function show_help_screen() {
+    clear
+    banner
+
+    _sec "Commands"
+    _kv "install" "${C_DIM}Install Mirza${CR}"
+    _kv "update" "${C_DIM}Update Mirza (choose channel / version)${CR}"
+    _kv "remove" "${C_DIM}Remove Mirza and its services${CR}"
+    _kv "migrate" "${C_DIM}Migrate Free -> Pro${CR}"
+    _kv "menu" "${C_DIM}Open this interactive panel (default)${CR}"
+
+    _sec "Install parameters"
+    _kv "--name" "${C_DIM}Bot username${CR}"
+    _kv "--token" "${C_DIM}Telegram bot token${CR}"
+    _kv "--admin" "${C_DIM}Admin chat id${CR}"
+    _kv "--domain" "${C_DIM}Domain name (e.g. bot.example.com)${CR}"
+    _kv "--db-user" "${C_DIM}Database username${CR}"
+    _kv "--db-pass" "${C_DIM}Database password${CR}"
+
+    _sec "Source parameters"
+    _kv "--version" "${C_DIM}Specific release tag (e.g. 0.1.7)${CR}"
+    _kv "--channel" "${C_DIM}beta | release | auto${CR}"
+    _kv "-h, --help" "${C_DIM}Show CLI help and exit${CR}"
+
+    _sec "Examples"
+    printf "    ${C_KEY}mirza install --channel auto${CR}\n"
+    printf "    ${C_KEY}mirza install --name myvpnbot --token 123:ABC \\\\${CR}\n"
+    printf "    ${C_DIM}            --admin 111 --domain bot.example.com --version 0.1.7${CR}\n"
+    printf "    ${C_KEY}mirza update --version 0.1.6${CR}\n"
+    printf "    ${C_KEY}mirza update --channel release${CR}\n"
+    printf "    ${C_KEY}mirza remove${CR}\n"
+
+    echo ""
+    _rule
+    echo ""
+    printf "  ${C_PROMPT}❯${CR} Press Enter to return to the menu... "
+    read -r _
+    show_menu
+}
 function check_marzban_installed() {
     if [ -f "/opt/marzban/docker-compose.yml" ]; then
-        return 0  # Marzban installed
+        return 0
     else
-        return 1  # Marzban not installed
+        return 1
     fi
 }
-# Detect database type for Marzban
 function detect_database_type() {
     COMPOSE_FILE="/opt/marzban/docker-compose.yml"
     if [ ! -f "$COMPOSE_FILE" ]; then
-        echo "unknown"  # File not found, cannot determine database type
+        echo "unknown"
         return 1
     fi
     if grep -q "^[[:space:]]*mysql:" "$COMPOSE_FILE"; then
@@ -205,11 +572,10 @@ function detect_database_type() {
         echo "mariadb"
         return 1
     else
-        echo "sqlite"  # Assume SQLite if neither MySQL nor MariaDB is found
+        echo "sqlite"
         return 1
     fi
 }
-# Find a free port between 3300 and 3330
 function find_free_port() {
     for port in {3300..3330}; do
         if ! ss -tuln | grep -q ":$port "; then
@@ -220,12 +586,11 @@ function find_free_port() {
     echo -e "\033[31m[ERROR] No free port found between 3300 and 3330.\033[0m"
     exit 1
 }
-# Function to fix update issues by changing mirrors
 function fix_update_issues() {
     echo -e "\e[33mTrying to fix update issues by changing mirrors...\033[0m"
-    # Backup original sources.list
+    # Broken apt mirrors are often a DNS problem - fix DNS first
+    ensure_dns
     cp /etc/apt/sources.list /etc/apt/sources.list.backup
-    # Detect Ubuntu version
     if [ -f /etc/os-release ]; then
         . /etc/apt/sources.list
         VERSION_ID=$(cat /etc/os-release | grep VERSION_ID | cut -d '"' -f2)
@@ -234,7 +599,6 @@ function fix_update_issues() {
         echo -e "\e[91mCould not detect Ubuntu version.\033[0m"
         return 1
     fi
-    # Try different mirrors
     MIRRORS=(
         "archive.ubuntu.com"
         "us.archive.ubuntu.com"
@@ -245,36 +609,172 @@ function fix_update_issues() {
     )
     for mirror in "${MIRRORS[@]}"; do
         echo -e "\e[33mTrying mirror: $mirror\033[0m"
-        # Create new sources.list
         cat > /etc/apt/sources.list << EOF
 deb http://$mirror/ubuntu/ $UBUNTU_CODENAME main restricted universe multiverse
 deb http://$mirror/ubuntu/ $UBUNTU_CODENAME-updates main restricted universe multiverse
 deb http://$mirror/ubuntu/ $UBUNTU_CODENAME-security main restricted universe multiverse
 EOF
-        # Try updating
         if apt-get update 2>/dev/null; then
             echo -e "\e[32mSuccessfully updated using mirror: $mirror\033[0m"
             return 0
         fi
     done
-    # If all mirrors fail, restore original sources.list
     mv /etc/apt/sources.list.backup /etc/apt/sources.list
     echo -e "\e[91mAll mirrors failed. Restored original sources.list\033[0m"
     return 1
 }
-# Install Function for Mirza Pro
+
+# ─────────────────────────────────────────────────────────────
+#  Validation and pre-flight checks
+#  (DNS helpers dns_works/ensure_dns are defined near the top)
+# ─────────────────────────────────────────────────────────────
+
+# Can we actually reach the internet?
+net_works() {
+    curl -fsSL --max-time 8 -o /dev/null "https://github.com" 2>/dev/null && return 0
+    curl -fsSL --max-time 8 -o /dev/null "https://api.telegram.org" 2>/dev/null && return 0
+    return 1
+}
+
+# Ensure DNS + connectivity, fixing DNS automatically if needed.
+ensure_connectivity() {
+    ensure_dns
+    net_works && return 0
+    echo -e "  ${C_WARN}!${CR} ${C_WARN}No connectivity - resetting DNS and retrying...${CR}"
+    ensure_dns
+    net_works && return 0
+    return 1
+}
+
+# ── Input validators ─────────────────────────────────────────
+validate_domain() { [[ "$1" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; }
+
+# 0 = points here, 1 = points elsewhere, 2 = could not resolve
+domain_points_here() {
+    local dom="$1" myip resolved
+    myip=$(get_server_ip)
+    resolved=$(getent ahostsv4 "$dom" 2>/dev/null | awk '{print $1; exit}')
+    [ -z "$resolved" ] && resolved=$(getent hosts "$dom" 2>/dev/null | awk '{print $1; exit}')
+    [ -z "$resolved" ] && return 2
+    [ "$resolved" = "$myip" ] && return 0
+    return 1
+}
+
+# 0 = valid+live, 1 = bad format, 2 = format ok but token rejected/unreachable
+validate_token() {
+    [[ "$1" =~ ^[0-9]{8,10}:[a-zA-Z0-9_-]{35}$ ]] || return 1
+    local r; r=$(curl -fsSL --max-time 8 "https://api.telegram.org/bot$1/getMe" 2>/dev/null)
+    echo "$r" | grep -q '"ok":true' && return 0
+    return 2
+}
+
+# Safe identifiers/passwords (no quotes/specials that break SQL or config.php)
+valid_db_ident() { [[ "$1" =~ ^[A-Za-z0-9_]{1,32}$ ]]; }
+valid_db_pass()  { [[ "$1" =~ ^[A-Za-z0-9_]{6,64}$ ]]; }
+
+# Whole-server pre-flight before installing
+preflight() {
+    local ok=1
+    _sec "Pre-flight checks"
+
+    if command -v apt-get >/dev/null 2>&1; then
+        _kv "Package mgr" "$(_dot ok) ${C_OK}apt detected${CR}"
+    else
+        _kv "Package mgr" "$(_dot bad) ${C_BAD}apt not found (Ubuntu/Debian required)${CR}"; ok=0
+    fi
+
+    local arch; arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64|aarch64|arm64) _kv "Arch" "$(_dot ok) ${C_OK}${arch}${CR}" ;;
+        *) _kv "Arch" "$(_dot warn) ${C_WARN}${arch} (untested)${CR}" ;;
+    esac
+
+    local free_mb; free_mb=$(df -Pm / 2>/dev/null | awk 'NR==2{print $4}')
+    if [ "${free_mb:-0}" -ge 2048 ]; then
+        _kv "Disk free" "$(_dot ok) ${C_OK}${free_mb} MB${CR}"
+    else
+        _kv "Disk free" "$(_dot bad) ${C_BAD}${free_mb:-0} MB (need >= 2048 MB)${CR}"; ok=0
+    fi
+
+    local mem; mem=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+    if [ "${mem:-0}" -ge 900 ]; then
+        _kv "RAM" "$(_dot ok) ${C_OK}${mem} MB${CR}"
+    else
+        _kv "RAM" "$(_dot warn) ${C_WARN}${mem:-0} MB (low; MySQL may struggle)${CR}"
+    fi
+
+    if ensure_connectivity; then
+        _kv "Network" "$(_dot ok) ${C_OK}online${CR}"
+    else
+        _kv "Network" "$(_dot bad) ${C_BAD}offline (cannot reach GitHub/Telegram)${CR}"; ok=0
+    fi
+
+    local b80 b443
+    b80=$(ss -ltnH 'sport = :80' 2>/dev/null | head -1)
+    b443=$(ss -ltnH 'sport = :443' 2>/dev/null | head -1)
+    if [ -n "$b80" ] || [ -n "$b443" ]; then
+        _kv "Ports 80/443" "$(_dot warn) ${C_WARN}in use (will be freed for Apache/SSL)${CR}"
+    else
+        _kv "Ports 80/443" "$(_dot ok) ${C_OK}free${CR}"
+    fi
+
+    if [ "$ok" -ne 1 ]; then
+        echo ""
+        echo -e "  ${C_BAD}●${CR} ${C_BAD}Pre-flight checks failed. Aborting to avoid a broken install.${CR}"
+        return 1
+    fi
+    return 0
+}
+
 function install_bot() {
-    echo -e "\e[32mInstalling Mirza Pro script ... \033[0m\n"
-    # Check if Marzban is installed and redirect to appropriate function
+    echo -e "\e[32mInstalling Mirza script ... \033[0m\n"
+
+    # Guard: refuse to install if Mirza is already installed
+    if [ -f "$CONFIG_FILE_DEFAULT" ] || [ -d "$BOT_DIR_DEFAULT" ]; then
+        clear
+        banner
+        _sec "Install blocked"
+        printf "    ${C_BAD}●${CR} ${C_BAD}Mirza is already installed on this server.${CR}\n"
+        printf "    ${C_DIM}Path:${CR} %s\n" "$BOT_DIR_DEFAULT"
+        echo ""
+        printf "    ${C_DIM}To upgrade, use option ${CR}${C_KEY}2 (Update)${CR}${C_DIM}.${CR}\n"
+        printf "    ${C_DIM}To reinstall, first remove it with option ${CR}${C_KEY}3 (Remove)${CR}${C_DIM}.${CR}\n"
+        echo ""
+        printf "  ${C_PROMPT}❯${CR} Press Enter to return to the menu... "
+        read -r _
+        show_menu
+        return 1
+    fi
+
     if check_marzban_installed; then
         echo -e "\033[41m[IMPORTANT WARNING]\033[0m \033[1;33mMarzban detected. Proceeding with Marzban-compatible installation.\033[0m"
-        install_bot_with_marzban "$@"  # Pass any arguments (e.g., -v beta)
+        install_bot_with_marzban "$@"
         return 0
     fi
 
+    # ── Pre-flight checks (network/DNS/disk/ram/ports) ──
+    clear
+    banner
+    if ! preflight; then
+        echo ""
+        printf "  ${C_PROMPT}❯${CR} Press Enter to return to the menu... "
+        read -r _
+        show_menu
+        return 1
+    fi
+
+    # ── Choose which version to install (release / automatic / beta) ──
+    echo ""
+    choose_source
+    local _rc=$?
+    if [ "$_rc" -eq 2 ]; then show_menu; return 0; fi
+    if [ "$_rc" -ne 0 ]; then sleep 2; show_menu; return 1; fi
+    echo ""
+    echo -e "  ${C_DIM}Install target:${CR} ${C_KEY}${SRC_LABEL}${CR}"
+    sleep 1
+
     print_header "Installing Dependencies"
 
-    # 1) PHP repository (PPA) with locale fallback
     if ! run_step "Adding PHP repository (ondrej/php)" "add-apt-repository -y ppa:ondrej/php"; then
         if ! run_step "Retrying PHP repository with locale override" "LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php"; then
             show_step_error
@@ -283,7 +783,6 @@ function install_bot() {
         fi
     fi
 
-    # 2) System update & upgrade (with mirror fallback)
     if ! run_step "Updating & upgrading system packages" "apt update && apt upgrade -y"; then
         echo -e "\e[93mUpdate/upgrade failed. Attempting to fix using alternative mirrors...\033[0m"
         if fix_update_issues; then
@@ -298,22 +797,18 @@ function install_bot() {
         fi
     fi
 
-    # 3) Base tooling
     run_step "Installing base tools (git, curl, wget, unzip, jq)" \
         "apt-get install -y software-properties-common git unzip curl wget jq" \
         || { show_step_error; echo -e "\e[91mError: Failed to install base tools.\033[0m"; exit 1; }
 
-    # 4) PHP 8.2 core
     run_step "Installing PHP 8.2 (fpm + mysql)" \
         "DEBIAN_FRONTEND=noninteractive apt install -y php8.2 php8.2-fpm php8.2-mysql" \
         || { show_step_error; echo -e "\e[91mError: Failed to install PHP 8.2.\033[0m"; exit 1; }
 
-    # 5) Web stack (Apache + MySQL + PHP modules)
     run_step "Installing web stack (Apache, MySQL, PHP modules)" \
         "DEBIAN_FRONTEND=noninteractive apt install -y lamp-server^ libapache2-mod-php mysql-server apache2 php-mbstring php-zip php-gd php-json php-curl" \
         || { show_step_error; echo -e "\e[91mError: Failed to install web stack.\033[0m"; exit 1; }
 
-    # 6) phpMyAdmin (preseed answers, then install silently)
     echo 'phpmyadmin phpmyadmin/dbconfig-install boolean true' | sudo debconf-set-selections
     echo 'phpmyadmin phpmyadmin/app-password-confirm password mirzahipass' | sudo debconf-set-selections
     echo 'phpmyadmin phpmyadmin/mysql/admin-pass password mirzahipass' | sudo debconf-set-selections
@@ -323,7 +818,6 @@ function install_bot() {
         "DEBIAN_FRONTEND=noninteractive apt-get install -y phpmyadmin" \
         || { show_step_error; echo -e "\e[91mError: Failed to install phpMyAdmin.\033[0m"; exit 1; }
 
-    # phpMyAdmin Apache config symlink (will be included in VirtualHost)
     if [ -f /etc/apache2/conf-available/phpmyadmin.conf ]; then
         sudo rm -f /etc/apache2/conf-available/phpmyadmin.conf
     fi
@@ -332,17 +826,14 @@ function install_bot() {
         exit 1
     }
 
-    # 7) Extra PHP / SSH modules
     run_step "Installing extra modules (php-soap, php-ssh2, libssh2)" \
         "apt-get install -y php-soap libapache2-mod-php php-ssh2 libssh2-1-dev libssh2-1" \
         || { show_step_error; echo -e "\e[91mError: Failed to install extra PHP modules.\033[0m"; exit 1; }
 
-    # 8) Enable & start core services
     run_step "Enabling & starting services (MySQL, Apache)" \
         "systemctl enable mysql.service && systemctl start mysql.service && systemctl enable apache2 && systemctl start apache2" \
         || { show_step_error; echo -e "\e[91mError: Failed to enable/start core services.\033[0m"; exit 1; }
 
-    # 9) Firewall
     run_step "Configuring firewall (UFW + Apache)" \
         "apt-get install -y ufw && ufw allow 'Apache'" \
         || { show_step_error; echo -e "\e[91mError: Failed to configure UFW.\033[0m"; exit 1; }
@@ -351,7 +842,6 @@ function install_bot() {
 
     echo -e "\n\e[92m All dependencies installed successfully.\033[0m"
 
-    # ── Download bot source ──────────────────────────────────
     print_header "Downloading Bot Files"
     BOT_DIR="/var/www/html/mirzaprobotconfig"
     if [ -d "$BOT_DIR" ]; then
@@ -367,16 +857,14 @@ function install_bot() {
         exit 1
     fi
 
-    # Always download from main branch (No releases for Pro)
-    ZIP_URL="https://github.com/mahdiMGF2/mirza_pro/archive/refs/heads/main.zip"
+    ZIP_URL="$SRC_ZIP_URL"
     TEMP_DIR="/tmp/mirzaprobot"
     mkdir -p "$TEMP_DIR"
-    run_step "Downloading Mirza Pro (main branch)" "wget -O '$TEMP_DIR/bot.zip' '$ZIP_URL'" \
+    run_step "Downloading Mirza (${SRC_LABEL})" "wget -O '$TEMP_DIR/bot.zip' '$ZIP_URL'" \
         || { show_step_error; echo -e "\e[91mError: Failed to download the specified version.\033[0m"; exit 1; }
     run_step "Extracting source files" "unzip -o '$TEMP_DIR/bot.zip' -d '$TEMP_DIR'" \
         || { show_step_error; echo -e "\e[91mError: Failed to extract source files.\033[0m"; exit 1; }
 
-    # Find the extracted directory dynamically (usually mirza_pro-main)
     EXTRACTED_DIR=$(find "$TEMP_DIR" -mindepth 1 -maxdepth 1 -type d)
     mv "$EXTRACTED_DIR"/* "$BOT_DIR" || {
         echo -e "\e[91mError: Failed to move extracted files.\033[0m"
@@ -385,7 +873,7 @@ function install_bot() {
     rm -rf "$TEMP_DIR"
     sudo chown -R www-data:www-data "$BOT_DIR"
     sudo chmod -R 755 "$BOT_DIR"
-    echo -e "\n\033[33mMirza Pro config and script have been installed successfully.\033[0m"
+    echo -e "\n\033[33mMirza config and script have been installed successfully.\033[0m"
     wait
     if [ ! -d "/root/confmirza" ]; then
         sudo mkdir /root/confmirza || {
@@ -411,20 +899,16 @@ function install_bot() {
         userrr=$(cat /root/confmirza/dbrootmirza.txt | grep '$user' | cut -d"'" -f2)
         sudo mysql -u $userrr -p$passs -e "alter user '$userrr'@'localhost' identified with mysql_native_password by '$passs';FLUSH PRIVILEGES;" || {
             echo -e "\e[91mError: Failed to alter MySQL user. Attempting recovery...\033[0m"
-            # Enable skip-grant-tables at the end of the file
             sudo sed -i '$ a skip-grant-tables' /etc/mysql/mysql.conf.d/mysqld.cnf
             sudo systemctl restart mysql
-            # Access MySQL to reset the root user
             sudo mysql <<EOF
 DROP USER IF EXISTS 'root'@'localhost';
 CREATE USER 'root'@'localhost' IDENTIFIED BY '${passs}';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 EOF
-            # Disable skip-grant-tables
             sudo sed -i '/skip-grant-tables/d' /etc/mysql/mysql.conf.d/mysqld.cnf
             sudo systemctl restart mysql
-            # Retry MySQL login with the new credentials
             echo "SELECT 1" | mysql -u$userrr -p$passs 2>/dev/null || {
                 echo -e "\e[91mError: Recovery failed. MySQL login still not working.\033[0m"
                 exit 1
@@ -436,11 +920,30 @@ EOF
     fi
     clear
     print_header "SSL Certificate Setup"
-    read -p "Enter the domain: " domainname
-    while [[ ! "$domainname" =~ ^[a-zA-Z0-9.-]+$ ]]; do
-        echo -e "\e[91mInvalid domain format. Please try again.\033[0m"
+    if [ -n "$ARG_DOMAIN" ]; then
+        domainname="$ARG_DOMAIN"
+        echo -e "  ${C_DIM}Domain (from --domain):${CR} ${C_KEY}${domainname}${CR}"
+    else
+        read -p "Enter the domain: " domainname
+    fi
+    while ! validate_domain "$domainname"; do
+        echo -e "\e[91mInvalid domain. Enter a full domain like bot.example.com (no http://, no slash).\033[0m"
         read -p "Enter the domain: " domainname
     done
+    # Verify the domain actually points to this server (certbot needs this)
+    domain_points_here "$domainname"
+    case $? in
+        0) echo -e "  ${C_OK}●${CR} ${C_OK}Domain resolves to this server.${CR}" ;;
+        1) echo -e "  ${C_WARN}!${CR} ${C_WARN}Domain does NOT point to this server's IP ($(get_server_ip)).${CR}"
+           echo -e "  ${C_DIM}Let's Encrypt will fail until the DNS A record points here.${CR}"
+           printf "  ${C_PROMPT}❯${CR} Continue anyway? ${C_DIM}[y/N]${CR}: "
+           read -r _gd
+           if [[ ! "$_gd" =~ ^[Yy]$ ]]; then echo -e "  ${C_BAD}Aborted. Fix the DNS A record and retry.${CR}"; sleep 1; show_menu; return 1; fi ;;
+        2) echo -e "  ${C_WARN}!${CR} ${C_WARN}Could not resolve the domain yet (DNS may still be propagating).${CR}"
+           printf "  ${C_PROMPT}❯${CR} Continue anyway? ${C_DIM}[y/N]${CR}: "
+           read -r _gd
+           if [[ ! "$_gd" =~ ^[Yy]$ ]]; then echo -e "  ${C_BAD}Aborted.${CR}"; sleep 1; show_menu; return 1; fi ;;
+    esac
     DOMAIN_NAME="$domainname"
     PATHS=$(cat /root/confmirza/dbrootmirza.txt | grep '$path' | cut -d"'" -f2)
 
@@ -465,7 +968,6 @@ EOF
     run_step "Enabling & starting Apache" "systemctl enable apache2 && systemctl start apache2" \
         || { show_step_error; echo -e "\e[91mError: Failed to start Apache2.\033[0m"; exit 1; }
 
-    # Create Apache VirtualHost configuration for port 80
     VHOST_FILE="/etc/apache2/sites-available/${DOMAIN_NAME}.conf"
     sudo tee "$VHOST_FILE" > /dev/null <<EOF
 <VirtualHost *:80>
@@ -476,13 +978,11 @@ EOF
         AllowOverride All
         Require all granted
     </Directory>
-    # Include phpMyAdmin configuration
     Include /etc/apache2/conf-available/phpmyadmin.conf
     ErrorLog \${APACHE_LOG_DIR}/${DOMAIN_NAME}-error.log
     CustomLog \${APACHE_LOG_DIR}/${DOMAIN_NAME}-access.log combined
 </VirtualHost>
 EOF
-    # Create Apache VirtualHost configuration for port 443 (HTTPS)
     VHOST_SSL_FILE="/etc/apache2/sites-available/${DOMAIN_NAME}-ssl.conf"
     sudo tee "$VHOST_SSL_FILE" > /dev/null <<EOF
 <VirtualHost *:443>
@@ -496,43 +996,72 @@ EOF
         AllowOverride All
         Require all granted
     </Directory>
-    # Include phpMyAdmin configuration
     Include /etc/apache2/conf-available/phpmyadmin.conf
     ErrorLog \${APACHE_LOG_DIR}/${DOMAIN_NAME}-error.log
     CustomLog \${APACHE_LOG_DIR}/${DOMAIN_NAME}-access.log combined
 </VirtualHost>
 EOF
-    # Enable vhosts, remove default conflicting configs, enable SSL, restart — all quietly
     run_step "Configuring Apache virtual hosts" \
         "a2ensite '${DOMAIN_NAME}.conf' && a2ensite '${DOMAIN_NAME}-ssl.conf' ; a2dissite 000-default.conf 2>/dev/null ; a2dissite 000-default-le-ssl.conf 2>/dev/null ; a2dissite default-ssl.conf 2>/dev/null ; rm -f /etc/apache2/sites-enabled/000-default.conf /etc/apache2/sites-enabled/000-default-le-ssl.conf /etc/apache2/sites-enabled/default-ssl.conf ; rm -f /etc/apache2/sites-available/000-default.conf /etc/apache2/sites-available/000-default-le-ssl.conf /etc/apache2/sites-available/default-ssl.conf ; a2enmod ssl && systemctl restart apache2" \
         || { show_step_error; echo -e "\e[91mError: Failed to configure Apache virtual hosts.\033[0m"; exit 1; }
 
     clear
     print_header "Bot Configuration"
-    printf "\e[33m[+] \e[36mBot Token: \033[0m"
-    read YOUR_BOT_TOKEN
+    if [ -n "$ARG_TOKEN" ]; then
+        YOUR_BOT_TOKEN="$ARG_TOKEN"
+        echo -e "\e[33m[+] \e[36mBot Token (from --token):\e[0m ${YOUR_BOT_TOKEN:0:10}..."
+    else
+        printf "\e[33m[+] \e[36mBot Token: \033[0m"
+        read YOUR_BOT_TOKEN
+    fi
     while [[ ! "$YOUR_BOT_TOKEN" =~ ^[0-9]{8,10}:[a-zA-Z0-9_-]{35}$ ]]; do
         echo -e "\e[91mInvalid bot token format. Please try again.\033[0m"
         printf "\e[33m[+] \e[36mBot Token: \033[0m"
         read YOUR_BOT_TOKEN
     done
-    printf "\e[33m[+] \e[36mChat id: \033[0m"
-    read YOUR_CHAT_ID
+    # Live-verify the token with Telegram (getMe)
+    while true; do
+        validate_token "$YOUR_BOT_TOKEN"
+        case $? in
+            0) echo -e "  ${C_OK}●${CR} ${C_OK}Token verified with Telegram.${CR}"; break ;;
+            2) echo -e "  ${C_BAD}●${CR} ${C_BAD}Telegram rejected this token (or API unreachable).${CR}"
+               printf "  ${C_PROMPT}❯${CR} Re-enter token, or press Enter to keep it anyway: "
+               read -r _t
+               if [ -z "$_t" ]; then break; fi
+               YOUR_BOT_TOKEN="$_t"
+               while [[ ! "$YOUR_BOT_TOKEN" =~ ^[0-9]{8,10}:[a-zA-Z0-9_-]{35}$ ]]; do
+                   echo -e "\e[91mInvalid format.\033[0m"; printf "  ${C_PROMPT}❯${CR} Bot Token: "; read -r YOUR_BOT_TOKEN
+               done ;;
+            *) break ;;
+        esac
+    done
+    if [ -n "$ARG_ADMIN" ]; then
+        YOUR_CHAT_ID="$ARG_ADMIN"
+        echo -e "\e[33m[+] \e[36mChat id (from --admin):\e[0m ${YOUR_CHAT_ID}"
+    else
+        printf "\e[33m[+] \e[36mChat id: \033[0m"
+        read YOUR_CHAT_ID
+    fi
     while [[ ! "$YOUR_CHAT_ID" =~ ^-?[0-9]+$ ]]; do
         echo -e "\e[91mInvalid chat ID format. Please try again.\033[0m"
         printf "\e[33m[+] \e[36mChat id: \033[0m"
         read YOUR_CHAT_ID
     done
     YOUR_DOMAIN="$DOMAIN_NAME"
-    while true; do
-        printf "\e[33m[+] \e[36musernamebot: \033[0m"
-        read YOUR_BOTNAME
-        if [ "$YOUR_BOTNAME" != "" ]; then
-            break
-        else
-            echo -e "\e[91mError: Bot username cannot be empty. Please enter a valid username.\033[0m"
-        fi
-    done
+    if [ -n "$ARG_NAME" ]; then
+        YOUR_BOTNAME="$ARG_NAME"
+        echo -e "\e[33m[+] \e[36musernamebot (from --name):\e[0m ${YOUR_BOTNAME}"
+    else
+        while true; do
+            printf "\e[33m[+] \e[36musernamebot: \033[0m"
+            read YOUR_BOTNAME
+            if [ "$YOUR_BOTNAME" != "" ]; then
+                break
+            else
+                echo -e "\e[91mError: Bot username cannot be empty. Please enter a valid username.\033[0m"
+            fi
+        done
+    fi
     ROOT_PASSWORD=$(cat /root/confmirza/dbrootmirza.txt | grep '$pass' | cut -d"'" -f2)
     ROOT_USER="root"
     echo "SELECT 1" | mysql -u$ROOT_USER -p$ROOT_PASSWORD 2>/dev/null || {
@@ -543,30 +1072,46 @@ EOF
         wait
         randomdbpass=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | cut -c1-8)
         randomdbdb=$(openssl rand -base64 10 | tr -dc 'a-zA-Z' | cut -c1-8)
-        # Updated DB name to mirzaprobot to avoid conflict
         if [[ $(mysql -u root -p$ROOT_PASSWORD -e "SHOW DATABASES LIKE 'mirzaprobot'") ]]; then
             clear
             echo -e "\n\e[91mYou have already created the database\033[0m\n"
         else
             dbname=mirzaprobot
             clear
-            echo -e "\n\e[32mPlease enter the database username!\033[0m"
-            printf "[+] Default user name is \e[91m${randomdbdb}\e[0m ( let it blank to use this user name ): "
-            read dbuser
+            if [ -n "$ARG_DBUSER" ]; then
+                dbuser="$ARG_DBUSER"
+                echo -e "\e[32mDatabase username (from --db-user):\e[0m ${dbuser}"
+            else
+                echo -e "\n\e[32mPlease enter the database username!\033[0m"
+                printf "[+] Default user name is \e[91m${randomdbdb}\e[0m ( let it blank to use this user name ): "
+                read dbuser
+            fi
             if [ "$dbuser" = "" ]; then
                 dbuser=$randomdbdb
             fi
-            echo -e "\n\e[32mPlease enter the database password!\033[0m"
-            printf "[+] Default password is \e[91m${randomdbpass}\e[0m ( let it blank to use this password ): "
-            read dbpass
+            # Validate DB username charset (letters/digits/underscore)
+            if ! valid_db_ident "$dbuser"; then
+                echo -e "  ${C_WARN}!${CR} ${C_WARN}Invalid DB username (use only A-Z a-z 0-9 _). Using generated name.${CR}"
+                dbuser=$randomdbdb
+            fi
+            if [ -n "$ARG_DBPASS" ]; then
+                dbpass="$ARG_DBPASS"
+                echo -e "\e[32mDatabase password (from --db-pass): [hidden]\033[0m"
+            else
+                echo -e "\n\e[32mPlease enter the database password!\033[0m"
+                printf "[+] Default password is \e[91m${randomdbpass}\e[0m ( let it blank to use this password ): "
+                read dbpass
+            fi
             if [ "$dbpass" = "" ]; then
                 dbpass=$randomdbpass
             fi
-            # Create Database
+            # Validate DB password charset (avoid quotes/specials that break SQL & config.php)
+            if ! valid_db_pass "$dbpass"; then
+                echo -e "  ${C_WARN}!${CR} ${C_WARN}Password has unsafe characters or is too short (need 6+, A-Z a-z 0-9 _). Using generated password.${CR}"
+                dbpass=$randomdbpass
+            fi
             mysql -u root -p$ROOT_PASSWORD -e "CREATE DATABASE IF NOT EXISTS $dbname;"
-            # Create User (Remote Access) with restricted privileges
             mysql -u root -p$ROOT_PASSWORD -e "CREATE USER IF NOT EXISTS '$dbuser'@'%' IDENTIFIED WITH mysql_native_password BY '$dbpass'; GRANT ALL PRIVILEGES ON $dbname.* TO '$dbuser'@'%'; FLUSH PRIVILEGES;"
-            # Create User (Local Access) with restricted privileges
             mysql -u root -p$ROOT_PASSWORD -e "CREATE USER IF NOT EXISTS '$dbuser'@'localhost' IDENTIFIED WITH mysql_native_password BY '$dbpass'; GRANT ALL PRIVILEGES ON $dbname.* TO '$dbuser'@'localhost'; FLUSH PRIVILEGES;" || {
                 echo -e "\e[91mError: Failed to create database or user.\033[0m"
                 exit 1
@@ -576,7 +1121,6 @@ EOF
             ASAS="$"
             wait
             sleep 1
-            # Path to mirzaprobotconfig
             file_path="/var/www/html/mirzaprobotconfig/config.php"
             if [ -f "$file_path" ]; then
               rm "$file_path" || {
@@ -589,7 +1133,6 @@ EOF
             fi
             sleep 1
             secrettoken=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | cut -c1-8)
-            # Generate config.php with new Pro structure
             cat <<EOF > /var/www/html/mirzaprobotconfig/config.php
 <?php
 // This variable added for high load panels which their response time is long and bot can't communicate with online panel!
@@ -612,12 +1155,11 @@ try { \$pdo = new PDO(\$dsn, \$usernamedb, \$passworddb, \$options); } catch (\P
 ?>
 EOF
             sleep 1
-            # Set webhook
             run_step "Setting Telegram webhook" \
                 "curl -s -F \"url=https://${YOUR_DOMAIN}/index.php\" -F \"secret_token=${secrettoken}\" \"https://api.telegram.org/bot${YOUR_BOT_TOKEN}/setWebhook\"" \
                 || { show_step_error; echo -e "\e[91mError: Failed to set webhook for bot.\033[0m"; exit 1; }
 
-            MESSAGE="✅ The Mirza Pro bot is installed! for start the bot send /start command."
+            MESSAGE="✅ The Mirza bot is installed! for start the bot send /start command."
             curl -s -X POST "https://api.telegram.org/bot${YOUR_BOT_TOKEN}/sendMessage" -d chat_id="${YOUR_CHAT_ID}" -d text="$MESSAGE" > /dev/null 2>&1 || {
                 echo -e "\e[91mError: Failed to send message to Telegram.\033[0m"
                 exit 1
@@ -630,36 +1172,43 @@ EOF
             run_step "Initializing database tables" "curl -k --max-time 15 '$url' > /dev/null 2>&1" \
                 || echo -e "\e[93mWarning: Could not reach URL immediately, but installation may still be successful.\033[0m"
             clear
-            print_header "Installation Complete"
-            echo " "
-            echo -e "\e[102mDomain Bot: https://${YOUR_DOMAIN}\033[0m"
-            echo -e "\e[104mDatabase address: https://${YOUR_DOMAIN}/phpmyadmin\033[0m"
-            echo -e "\e[33mDatabase name: \e[36m${dbname}\033[0m"
-            echo -e "\e[33mDatabase username: \e[36m${dbuser}\033[0m"
-            echo -e "\e[33mDatabase password: \e[36m${dbpass}\033[0m"
-            echo " "
-            echo -e "Mirza Pro Bot"
+            banner
+            _sec "Installation complete"
+            printf "    ${C_OK}●${CR} ${C_OK}Mirza is installed and the webhook is set.${CR}\n"
+            printf "    ${C_DIM}Open Telegram and send ${CR}${C_KEY}/start${CR}${C_DIM} to your bot.${CR}\n"
+
+            _sec "Access"
+            _kv "Bot URL" "${C_DIM}https://${YOUR_DOMAIN}${CR}"
+            _kv "phpMyAdmin" "${C_DIM}https://${YOUR_DOMAIN}/phpmyadmin${CR}"
+
+            _sec "Database"
+            _kv "Name" "${C_KEY}${dbname}${CR}"
+            _kv "Username" "${C_KEY}${dbuser}${CR}"
+            _kv "Password" "${C_KEY}${dbpass}${CR}"
+            printf "    ${C_WARN}!${CR} ${C_DIM}Save these credentials somewhere safe.${CR}\n"
+
+            _sec "Manage"
+            _kv "Command" "${C_DIM}run ${CR}${C_KEY}mirza${CR}${C_DIM} anytime to open this panel${CR}"
+            echo ""
+            _rule
+            echo ""
         fi
     elif [ "$ROOT_PASSWORD" = "" ] || [ "$ROOT_USER" = "" ]; then
         echo -e "\n\e[36mThe password is empty.\033[0m\n"
     else
         echo -e "\n\e[36mThe password is not correct.\033[0m\n"
     fi
-    # Add executable permission and link (This is handled by self_update_script as well, but kept for completeness)
     chmod +x /root/install.sh
     ln -sf /root/install.sh /usr/local/bin/mirza
-    # Trigger self-update to ensure next run uses latest
     self_update_script
 }
 # function install_bot_with_marzban() {
-#     # Display warning and confirmation
 #     echo -e "\033[41m[IMPORTANT WARNING]\033[0m \033[1;33mMarzban panel is detected on your server. Please make sure to backup the Marzban database before installing Mirza Bot.\033[0m"
 #     read -p "Are you sure you want to install Mirza Bot alongside Marzban? (y/n): " confirm
 #     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
 #         echo -e "\e[91mInstallation aborted by user.\033[0m"
 #         exit 0
 #     fi
-#     # Check database type
 #     echo -e "\e[32mChecking Marzban database type...\033[0m"
 #     DB_TYPE=$(detect_database_type)
 #     if [ "$DB_TYPE" != "mysql" ]; then
@@ -672,33 +1221,46 @@ EOF
 #     # original file. It is preserved here unchanged. Re-enable + uncomment it
 #     # before relying on the Marzban-compatible install path.
 # }
-# Update Function for Mirza Pro
 function update_bot() {
-    echo "Updating Mirza Pro Bot..."
-    print_header "Updating Mirza Pro Bot"
-    # Update server packages
+    clear
+    banner
+    BOT_DIR="/var/www/html/mirzaprobotconfig"
+    if [ ! -d "$BOT_DIR" ]; then
+        _sec "Update"
+        printf "    ${C_BAD}●${CR} ${C_BAD}Mirza is not installed. Install it first.${CR}\n"
+        sleep 2
+        show_menu
+        return 1
+    fi
+
+    # ── Show current version + choose source (has Back option) ──
+    local current
+    current=$(get_installed_version); [ -z "$current" ] && current="unknown"
+    _sec "Update"
+    printf "    ${C_DIM}Currently installed:${CR} ${C_OK}%s${CR}\n" "$current"
+    if ! ensure_connectivity; then
+        printf "    ${C_BAD}●${CR} ${C_BAD}No internet connection (even after DNS reset). Try again later.${CR}\n"
+        sleep 2; show_menu; return 1
+    fi
+    choose_source
+    local _rc=$?
+    if [ "$_rc" -eq 2 ]; then show_menu; return 0; fi
+    if [ "$_rc" -ne 0 ]; then sleep 2; show_menu; return 1; fi
+    local ZIP_URL="$SRC_ZIP_URL" TARGET_LABEL="$SRC_LABEL"
+
+    echo ""
+    echo -e "  ${C_DIM}Update target:${CR} ${C_KEY}${TARGET_LABEL}${CR}"
+    print_header "Updating Mirza Bot"
     run_step "Updating system packages" "apt update && apt upgrade -y" \
         || { show_step_error; echo -e "\e[91mError updating the server. Exiting...\033[0m"; exit 1; }
     echo -e "\e[92mServer packages updated successfully...\033[0m\n"
-    # Check if bot is already installed (Pro Directory)
-    BOT_DIR="/var/www/html/mirzaprobotconfig"
-    if [ ! -d "$BOT_DIR" ]; then
-        echo -e "\e[91mError: Mirza Pro Bot is not installed. Please install it first.\033[0m"
-        exit 1
-    fi
-    # Fetch latest version from GitHub (Always Main Branch for Pro)
-    ZIP_URL="https://github.com/mahdiMGF2/mirza_pro/archive/refs/heads/main.zip"
-    # Create temporary directory
     TEMP_DIR="/tmp/mirzaprobot_update"
-    mkdir -p "$TEMP_DIR"
-    # Download and extract
-    run_step "Downloading latest version" "wget -q -O '$TEMP_DIR/bot.zip' '$ZIP_URL'" \
+    rm -rf "$TEMP_DIR"; mkdir -p "$TEMP_DIR"
+    run_step "Downloading ${TARGET_LABEL}" "wget -q -O '$TEMP_DIR/bot.zip' '$ZIP_URL'" \
         || { show_step_error; echo -e "\e[91mError: Failed to download update package.\033[0m"; exit 1; }
     run_step "Extracting update package" "unzip -o -q '$TEMP_DIR/bot.zip' -d '$TEMP_DIR'" \
         || { show_step_error; echo -e "\e[91mError: Failed to extract update package.\033[0m"; exit 1; }
-    # Find extracted directory (usually mirza_pro-main)
     EXTRACTED_DIR=$(find "$TEMP_DIR" -mindepth 1 -maxdepth 1 -type d)
-    # Backup config file
     CONFIG_PATH="$BOT_DIR/config.php"
     TEMP_CONFIG="/root/mirzapro_config_backup.php"
     if [ -f "$CONFIG_PATH" ]; then
@@ -709,43 +1271,35 @@ function update_bot() {
     else
         echo -e "\e[93mWarning: config.php not found. Proceeding without backup.\033[0m"
     fi
-    # Remove old version
     sudo rm -rf "$BOT_DIR" || {
         echo -e "\e[91mFailed to remove old bot files!\033[0m"
         exit 1
     }
-    # Move new files
     sudo mkdir -p "$BOT_DIR"
     sudo mv "$EXTRACTED_DIR"/* "$BOT_DIR/" || {
         echo -e "\e[91mFile transfer failed!\033[0m"
         exit 1
     }
-    # Restore config file
     if [ -f "$TEMP_CONFIG" ]; then
         sudo mv "$TEMP_CONFIG" "$CONFIG_PATH" || {
             echo -e "\e[91mConfig file restore failed!\033[0m"
             exit 1
         }
     fi
-    # Copy the new install.sh to /root/ to ensure script self-update works next time
     if [ -f "$BOT_DIR/install.sh" ]; then
         sudo cp "$BOT_DIR/install.sh" /root/install.sh
         echo -e "\n\e[92mCopied latest install.sh to /root/install.sh.\033[0m"
     else
         echo -e "\n\e[91mWarning: install.sh not found in update files.\033[0m"
     fi
-    # Set permissions
     sudo chown -R www-data:www-data "$BOT_DIR"
     sudo chmod -R 755 "$BOT_DIR"
-    # Extract domain name from config for VirtualHost setup
     DOMAIN_NAME=""
     if [ -f "$CONFIG_PATH" ]; then
         DOMAIN_NAME=$(grep "^\$domainhosts" "$CONFIG_PATH" | cut -d"'" -f2 | cut -d'/' -f1)
     fi
-    # If domain found, update Apache VirtualHost configuration
     if [ -n "$DOMAIN_NAME" ]; then
         echo -e "\e[33mUpdating Apache VirtualHost configuration for domain: $DOMAIN_NAME\033[0m"
-        # Create Apache VirtualHost configuration for port 80
         VHOST_FILE="/etc/apache2/sites-available/${DOMAIN_NAME}.conf"
         sudo tee "$VHOST_FILE" > /dev/null <<EOF
 <VirtualHost *:80>
@@ -756,13 +1310,11 @@ function update_bot() {
         AllowOverride All
         Require all granted
     </Directory>
-    # Include phpMyAdmin configuration
     Include /etc/apache2/conf-available/phpmyadmin.conf
     ErrorLog \${APACHE_LOG_DIR}/${DOMAIN_NAME}-error.log
     CustomLog \${APACHE_LOG_DIR}/${DOMAIN_NAME}-access.log combined
 </VirtualHost>
 EOF
-        # Create Apache VirtualHost configuration for port 443 (HTTPS)
         VHOST_SSL_FILE="/etc/apache2/sites-available/${DOMAIN_NAME}-ssl.conf"
         sudo tee "$VHOST_SSL_FILE" > /dev/null <<EOF
 <VirtualHost *:443>
@@ -776,37 +1328,25 @@ EOF
         AllowOverride All
         Require all granted
     </Directory>
-    # Include phpMyAdmin configuration
     Include /etc/apache2/conf-available/phpmyadmin.conf
     ErrorLog \${APACHE_LOG_DIR}/${DOMAIN_NAME}-error.log
     CustomLog \${APACHE_LOG_DIR}/${DOMAIN_NAME}-access.log combined
 </VirtualHost>
 EOF
-        # Enable the new virtual hosts (if not already enabled)
         if ! sudo apache2ctl -S 2>/dev/null | grep -q "$DOMAIN_NAME"; then
             sudo a2ensite "${DOMAIN_NAME}.conf" 2>/dev/null || true
             sudo a2ensite "${DOMAIN_NAME}-ssl.conf" 2>/dev/null || true
-
-            # --- FIX: CLEANUP DURING UPDATE ---
             echo -e "\e[33mCleaning up conflicting default Apache sites...\033[0m"
-
-            # Disable all variations of default sites
             sudo a2dissite 000-default.conf 2>/dev/null || true
             sudo a2dissite 000-default-le-ssl.conf 2>/dev/null || true
             sudo a2dissite default-ssl.conf 2>/dev/null || true
-
-            # Force remove links from sites-enabled
             sudo rm -f /etc/apache2/sites-enabled/000-default* 2>/dev/null || true
             sudo rm -f /etc/apache2/sites-enabled/default-ssl* 2>/dev/null || true
-
-            # Remove the source files to be sure
             sudo rm -f /etc/apache2/sites-available/000-default.conf 2>/dev/null || true
             sudo rm -f /etc/apache2/sites-available/000-default-le-ssl.conf 2>/dev/null || true
             sleep 3
-            # Enable SSL module
             sudo a2enmod ssl 2>/dev/null || true
         fi
-        # Test Apache configuration
         if sudo apache2ctl configtest 2>/dev/null | grep -q "Syntax OK"; then
             sudo systemctl restart apache2 || {
                 echo -e "\e[91mWarning: Failed to restart Apache2 after updating VirtualHost.\033[0m"
@@ -816,8 +1356,6 @@ EOF
             echo -e "\e[93mWarning: Apache configuration test failed. Skipping restart.\033[0m"
         fi
     fi
-    # Run setup script (table.php) to apply any DB changes
-    # Extracting the domain/path from the new config structure
     if [ -f "$CONFIG_PATH" ]; then
         URL_PATH=$(grep "^\$domainhosts" "$CONFIG_PATH" | cut -d"'" -f2)
         if [ -n "$URL_PATH" ]; then
@@ -825,10 +1363,8 @@ EOF
                 || echo -e "\e[91mSetup script execution failed! Check logs.\033[0m"
         fi
     fi
-    # Cleanup
     rm -rf "$TEMP_DIR"
     echo -e "\n\e[92mMirza Bot updated to latest version successfully!\033[0m"
-    # Ensure /root/install.sh is executable and linked to mirza
     if [ -f "/root/install.sh" ]; then
         sudo chmod +x /root/install.sh
         sudo ln -sf /root/install.sh /usr/local/bin/mirza
@@ -837,48 +1373,40 @@ EOF
         echo -e "\e[91mError: /root/install.sh not found after update attempt.\033[0m"
     fi
 }
-# Delete Function for Mirza Pro
 function remove_bot() {
-    echo -e "\e[33mStarting Mirza Pro Bot removal process...\033[0m"
+    echo -e "\e[33mStarting Mirza Bot removal process...\033[0m"
     LOG_FILE="/var/log/remove_bot.log"
     echo "Log file: $LOG_FILE" > "$LOG_FILE"
-    # Check if Mirza Pro Bot is installed
     BOT_DIR="/var/www/html/mirzaprobotconfig"
     if [ ! -d "$BOT_DIR" ]; then
-        echo -e "\e[31m[ERROR]\033[0m Mirza Pro Bot is not installed (/var/www/html/mirzaprobotconfig not found)." | tee -a "$LOG_FILE"
+        echo -e "\e[31m[ERROR]\033[0m Mirza Bot is not installed (/var/www/html/mirzaprobotconfig not found)." | tee -a "$LOG_FILE"
         echo -e "\e[33mNothing to remove. Exiting...\033[0m" | tee -a "$LOG_FILE"
         sleep 2
         exit 1
     fi
-    # User Confirmation
-    read -p "Are you sure you want to remove Mirza Pro Bot and its dependencies? (y/n): " choice
+    read -p "Are you sure you want to remove Mirza Bot and its dependencies? (y/n): " choice
     if [[ "$choice" != "y" ]]; then
         echo "Aborting..." | tee -a "$LOG_FILE"
         exit 0
     fi
-    # Check if Marzban is installed and redirect to appropriate function
     if check_marzban_installed; then
         echo -e "\e[41m[IMPORTANT NOTICE]\033[0m \e[33mMarzban detected. Proceeding with Marzban-compatible removal.\033[0m" | tee -a "$LOG_FILE"
         remove_bot_with_marzban
         return 0
     fi
-    # Proceed with normal removal if Marzban is not installed
-    echo "Removing Mirza Pro Bot..." | tee -a "$LOG_FILE"
-    # Delete Configuration File securely before removing directory
+    echo "Removing Mirza Bot..." | tee -a "$LOG_FILE"
     CONFIG_PATH="/var/www/html/mirzaprobotconfig/config.php"
     if [ -f "$CONFIG_PATH" ]; then
         sudo shred -u -n 5 "$CONFIG_PATH" && echo -e "\e[92mConfig file securely removed: $CONFIG_PATH\033[0m" | tee -a "$LOG_FILE" || {
             echo -e "\e[91mFailed to securely remove config file: $CONFIG_PATH\033[0m" | tee -a "$LOG_FILE"
         }
     fi
-    # Delete the Bot Directory
     if [ -d "$BOT_DIR" ]; then
         sudo rm -rf "$BOT_DIR" && echo -e "\e[92mBot directory removed: $BOT_DIR\033[0m" | tee -a "$LOG_FILE" || {
             echo -e "\e[91mFailed to remove bot directory: $BOT_DIR. Exiting...\033[0m" | tee -a "$LOG_FILE"
             exit 1
         }
     fi
-    # Delete MySQL and Database Data
     echo -e "\e[33mRemoving MySQL and database...\033[0m" | tee -a "$LOG_FILE"
     sudo systemctl stop mysql
     sudo systemctl disable mysql
@@ -896,7 +1424,6 @@ function remove_bot() {
     sudo apt-get clean
     sudo apt-get update
     echo -e "\e[92mMySQL has been completely removed.\033[0m" | tee -a "$LOG_FILE"
-    # Delete PHPMyAdmin
     echo -e "\e[33mRemoving PHPMyAdmin...\033[0m" | tee -a "$LOG_FILE"
     if dpkg -s phpmyadmin &>/dev/null; then
         sudo apt-get purge -y phpmyadmin && echo -e "\e[92mPHPMyAdmin removed.\033[0m" | tee -a "$LOG_FILE"
@@ -904,7 +1431,6 @@ function remove_bot() {
     else
         echo -e "\e[93mPHPMyAdmin is not installed.\033[0m" | tee -a "$LOG_FILE"
     fi
-    # Remove Apache
     echo -e "\e[33mRemoving Apache...\033[0m" | tee -a "$LOG_FILE"
     sudo systemctl stop apache2 || {
         echo -e "\e[91mFailed to stop Apache. Continuing anyway...\033[0m" | tee -a "$LOG_FILE"
@@ -918,36 +1444,32 @@ function remove_bot() {
     sudo apt-get autoremove --purge -y
     sudo apt-get autoclean -y
     sudo rm -rf /etc/apache2 /var/www/html
-    # Delete Apache and PHP Settings
     echo -e "\e[33mRemoving Apache and PHP configurations...\033[0m" | tee -a "$LOG_FILE"
     sudo a2disconf phpmyadmin.conf &>/dev/null
     sudo rm -f /etc/apache2/conf-available/phpmyadmin.conf
     sudo systemctl restart apache2
-    # Remove Unnecessary Packages
     echo -e "\e[33mRemoving additional packages...\033[0m" | tee -a "$LOG_FILE"
     sudo apt-get remove -y php-soap php-ssh2 libssh2-1-dev libssh2-1 \
         && echo -e "\e[92mRemoved additional PHP packages.\033[0m" | tee -a "$LOG_FILE" || echo -e "\e[93mSome additional PHP packages may not be installed.\033[0m" | tee -a "$LOG_FILE"
-    # Reset Firewall (without changing SSL rules)
     echo -e "\e[33mResetting firewall rules (except SSL)...\033[0m" | tee -a "$LOG_FILE"
     sudo ufw delete allow 'Apache'
     sudo ufw reload
-    echo -e "\e[92mMirza Pro Bot, MySQL, and their dependencies have been completely removed.\033[0m" | tee -a "$LOG_FILE"
+    echo -e "\e[92mMirza Bot, MySQL, and their dependencies have been completely removed.\033[0m" | tee -a "$LOG_FILE"
 }
 
-# Migration Function from Free to Pro
 function migrate_to_pro() {
     clear
     echo -e "\033[1;33mStarting Migration from Free to Pro Version...\033[0m"
-
-    # 1. Check Previous Installation Source
+    if ! ensure_connectivity; then
+        echo -e "  ${C_BAD}●${CR} ${C_BAD}No internet connection (even after DNS reset). Aborting.${CR}"
+        sleep 2; show_menu; return 1
+    fi
     OLD_BOT_DIR="/var/www/html/mirzabotconfig"
     if [ ! -d "$OLD_BOT_DIR" ]; then
         echo -e "\033[31m[ERROR] Free version source code not found in $OLD_BOT_DIR.\033[0m"
         echo -e "\033[33mMake sure the free version is installed.\033[0m"
         exit 1
     fi
-
-    # 2. Check MySQL Status
     if ! systemctl is-active --quiet mysql; then
         echo -e "\033[31m[ERROR] MySQL service is not active or not installed.\033[0m"
         echo -e "\033[33mPlease ensure MySQL is running locally.\033[0m"
@@ -955,22 +1477,18 @@ function migrate_to_pro() {
     else
         echo -e "\033[32mMySQL is running.\033[0m"
     fi
-
-    # 3. User Confirmation & Backup Check
     echo ""
     read -p "Are you sure you want to migrate to the Pro version? (y/n): " confirm_mig
     if [[ "$confirm_mig" != "y" && "$confirm_mig" != "Y" ]]; then
         echo -e "\033[31mMigration aborted.\033[0m"
         exit 0
     fi
-
     echo ""
     read -p "Have you created a backup of your database? (y/n): " confirm_backup
     if [[ "$confirm_backup" != "y" && "$confirm_backup" != "Y" ]]; then
         echo -e "\033[31mPlease create a backup first!\033[0m"
         exit 1
     fi
-
     BACKUP_FILE="/root/mirzabot_backup.sql"
     if [ ! -f "$BACKUP_FILE" ]; then
         echo -e "\033[31m[ERROR] Backup file not found at $BACKUP_FILE\033[0m"
@@ -979,8 +1497,6 @@ function migrate_to_pro() {
     else
         echo -e "\033[32mBackup file found.\033[0m"
     fi
-
-    # 4. Warning about Additional Bots
     echo ""
     echo -e "\033[43;30m[WARNING] Additional Bots Notice\033[0m"
     echo -e "\033[33mThis migration process will reconfigure Apache for the Pro version.\033[0m"
@@ -994,122 +1510,79 @@ function migrate_to_pro() {
         echo -e "\033[31mMigration aborted.\033[0m"
         exit 0
     fi
-
-    # 5. Database Credentials (Root)
     echo -e "\n\033[36mChecking Database Credentials...\033[0m"
     ROOT_CRED_FILE="/root/confmirza/dbrootmirza.txt"
     ROOT_PASS=""
     ROOT_USER="root"
-
     if [ -f "$ROOT_CRED_FILE" ]; then
         ROOT_PASS=$(grep '$pass' "$ROOT_CRED_FILE" | cut -d"'" -f2)
     fi
-
-    # Check if we got the password, if not, ask user
     if [ -z "$ROOT_PASS" ]; then
         echo -e "\033[33mRoot password not found in config file.\033[0m"
         read -s -p "Please enter MySQL root password: " ROOT_PASS
         echo ""
     fi
-
-    # Validate MySQL Connection
     if ! mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "SELECT 1;" &>/dev/null; then
         echo -e "\033[31m[ERROR] Incorrect MySQL root password. Migration stopped.\033[0m"
         exit 1
     fi
     echo -e "\033[32mDatabase connection successful.\033[0m"
-
-    # 6. Database Operations (Cleanup & Rename)
     OLD_DB="mirzabot"
     NEW_DB="mirzaprobot"
-
-    # Check if old DB exists
     if ! mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "USE $OLD_DB;" &>/dev/null; then
         echo -e "\033[31m[ERROR] Database '$OLD_DB' not found!\033[0m"
         exit 1
     fi
-
     echo -e "\033[33mCleaning up old tables (setting, admin, channels)...\033[0m"
     mysql -u "$ROOT_USER" -p"$ROOT_PASS" "$OLD_DB" -e "DROP TABLE IF EXISTS setting, admin, channels;"
-
     echo -e "\033[33mUpdating panel status...\033[0m"
-    # Check if table marzban_panel exists before updating to avoid errors
     if mysql -u "$ROOT_USER" -p"$ROOT_PASS" "$OLD_DB" -e "DESCRIBE marzban_panel;" &>/dev/null; then
          mysql -u "$ROOT_USER" -p"$ROOT_PASS" "$OLD_DB" -e "UPDATE marzban_panel SET status = 'active';"
     fi
-
     echo -e "\033[33mMigrating Database from $OLD_DB to $NEW_DB...\033[0m"
-    # Create new DB
     mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "CREATE DATABASE IF NOT EXISTS $NEW_DB;"
-
-    # Move tables (Renaming tables is safer and faster than dump/restore for migration)
     TABLES=$(mysql -u "$ROOT_USER" -p"$ROOT_PASS" -N -e "SHOW TABLES FROM $OLD_DB")
     for t in $TABLES; do
         mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "RENAME TABLE $OLD_DB.$t TO $NEW_DB.$t"
     done
-
-    # Drop old DB
     mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "DROP DATABASE IF EXISTS $OLD_DB;"
     echo -e "\033[32mDatabase migrated successfully.\033[0m"
-
-    # 7. Create New Database User & Delete Old User
-    # Extract old user from config to delete it
     OLD_CONFIG="/var/www/html/mirzabotconfig/config.php"
     OLD_DB_USER=$(grep '$usernamedb' "$OLD_CONFIG" | cut -d"'" -f2)
-
     if [ -n "$OLD_DB_USER" ]; then
         echo -e "\033[33mRemoving old database user ($OLD_DB_USER)...\033[0m"
         mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "DROP USER IF EXISTS '$OLD_DB_USER'@'localhost';"
         mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "DROP USER IF EXISTS '$OLD_DB_USER'@'%';"
     fi
-
-    # Create New User
     NEW_DB_USER=$(openssl rand -base64 10 | tr -dc 'a-zA-Z' | cut -c1-8)
     NEW_DB_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | cut -c1-10)
-
     echo -e "\033[33mCreating new database user...\033[0m"
     mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "CREATE USER '$NEW_DB_USER'@'localhost' IDENTIFIED WITH mysql_native_password BY '$NEW_DB_PASS';"
     mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "GRANT ALL PRIVILEGES ON $NEW_DB.* TO '$NEW_DB_USER'@'localhost';"
     mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "CREATE USER '$NEW_DB_USER'@'%' IDENTIFIED WITH mysql_native_password BY '$NEW_DB_PASS';"
     mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "GRANT ALL PRIVILEGES ON $NEW_DB.* TO '$NEW_DB_USER'@'%';"
     mysql -u "$ROOT_USER" -p"$ROOT_PASS" -e "FLUSH PRIVILEGES;"
-
-    # 8. Extract Data from Old Config & Prepare New Config
     echo -e "\033[33mReading old configuration...\033[0m"
     OLD_API_KEY=$(grep '$APIKEY' "$OLD_CONFIG" | cut -d"'" -f2)
     OLD_ADMIN_ID=$(grep '$adminnumber' "$OLD_CONFIG" | cut -d"'" -f2)
     OLD_BOT_NAME=$(grep '$usernamebot' "$OLD_CONFIG" | cut -d"'" -f2)
     OLD_DOMAIN_FULL=$(grep '$domainhosts' "$OLD_CONFIG" | cut -d"'" -f2)
-
-    # Extract pure domain (remove /mirzabotconfig)
     DOMAIN_NAME=$(echo "$OLD_DOMAIN_FULL" | cut -d'/' -f1)
-
     echo -e "\033[32mDomain detected: $DOMAIN_NAME\033[0m"
-
-    # 9. Install New Source Code
     NEW_BOT_DIR="/var/www/html/mirzaprobotconfig"
-
-    # Remove old directory
     rm -rf "$OLD_BOT_DIR"
-
-    # Create new directory
     mkdir -p "$NEW_BOT_DIR"
-
-    # Download Pro Source
     ZIP_URL="https://github.com/mahdiMGF2/mirza_pro/archive/refs/heads/main.zip"
     TEMP_DIR="/tmp/mirza_pro_mig"
     mkdir -p "$TEMP_DIR"
-    run_step "Downloading Mirza Pro source" "wget -q -O '$TEMP_DIR/bot.zip' '$ZIP_URL'" \
-        || { show_step_error; echo -e "\033[31mError: Failed to download Mirza Pro source.\033[0m"; exit 1; }
+    run_step "Downloading Mirza source" "wget -q -O '$TEMP_DIR/bot.zip' '$ZIP_URL'" \
+        || { show_step_error; echo -e "\033[31mError: Failed to download Mirza source.\033[0m"; exit 1; }
     run_step "Extracting source files" "unzip -o -q '$TEMP_DIR/bot.zip' -d '$TEMP_DIR'" \
         || { show_step_error; echo -e "\033[31mError: Failed to extract source files.\033[0m"; exit 1; }
     EXTRACTED_DIR=$(find "$TEMP_DIR" -mindepth 1 -maxdepth 1 -type d)
     mv "$EXTRACTED_DIR"/* "$NEW_BOT_DIR"
     rm -rf "$TEMP_DIR"
-
-    # 10. Generate New Config File
     NEW_SECRET_TOKEN=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | cut -c1-8)
-
     cat <<EOF > "$NEW_BOT_DIR/config.php"
 <?php
 // This variable added for high load panels which their response time is long and bot can't communicate with online panel!
@@ -1131,21 +1604,13 @@ try { \$pdo = new PDO(\$dsn, \$usernamedb, \$passworddb, \$options); } catch (\P
 \$usernamebot = '${OLD_BOT_NAME}';
 ?>
 EOF
-
-    # Set Permissions
     chown -R www-data:www-data "$NEW_BOT_DIR"
     chmod -R 755 "$NEW_BOT_DIR"
-
-    # 11. Reconfigure Apache (Clean Default & Set New VHost)
     echo -e "\033[33mReconfiguring Apache...\033[0m"
-
-    # Clean defaults
     a2dissite 000-default.conf 2>/dev/null || true
     a2dissite 000-default-le-ssl.conf 2>/dev/null || true
     rm -f /etc/apache2/sites-enabled/000-default* 2>/dev/null
     rm -f /etc/apache2/sites-available/000-default* 2>/dev/null
-
-    # Create New VHost for HTTP (80)
     VHOST_FILE="/etc/apache2/sites-available/${DOMAIN_NAME}.conf"
     cat <<EOF > "$VHOST_FILE"
 <VirtualHost *:80>
@@ -1161,8 +1626,6 @@ EOF
     CustomLog \${APACHE_LOG_DIR}/${DOMAIN_NAME}-access.log combined
 </VirtualHost>
 EOF
-
-    # Create New VHost for HTTPS (443)
     VHOST_SSL_FILE="/etc/apache2/sites-available/${DOMAIN_NAME}-ssl.conf"
     cat <<EOF > "$VHOST_SSL_FILE"
 <VirtualHost *:443>
@@ -1181,32 +1644,19 @@ EOF
     CustomLog \${APACHE_LOG_DIR}/${DOMAIN_NAME}-access.log combined
 </VirtualHost>
 EOF
-
-    # Enable Sites & Modules
     a2ensite "${DOMAIN_NAME}.conf"
     a2ensite "${DOMAIN_NAME}-ssl.conf"
     a2enmod ssl
     a2enmod rewrite
     systemctl restart apache2
-
-    # 12. Update Webhook & Run Table Update
     echo -e "\033[33mUpdating Webhook and Tables...\033[0m"
-
-    # Update Webhook (New URL structure: https://domain/index.php)
     curl -F "url=https://${DOMAIN_NAME}/index.php" \
          -F "secret_token=${NEW_SECRET_TOKEN}" \
          "https://api.telegram.org/bot${OLD_API_KEY}/setWebhook"
-
     sleep 2
-
-    # Run Table Setup Script
     curl -k "https://${DOMAIN_NAME}/table.php" > /dev/null 2>&1
-
-    # 13. Update CLI Shortcut (mirza)
     cp /root/install.sh /usr/local/bin/mirza
     chmod +x /usr/local/bin/mirza
-
-    # Final Message
     clear
     echo -e "\033[32m====================================================\033[0m"
     echo -e "\033[32m       MIGRATION SUCCESSFUL (Free -> Pro)           \033[0m"
@@ -1219,27 +1669,79 @@ EOF
     echo ""
 }
 
-# Main Argument Processing
+# ── Command-line argument parsing ────────────────────────────
+# Globals filled from flags (consumed by install/update where relevant)
+ARG_NAME=""     ARG_TOKEN=""   ARG_ADMIN=""    ARG_DOMAIN=""
+ARG_DBUSER=""   ARG_DBPASS=""  ARG_VERSION=""  ARG_CHANNEL=""
+
+print_usage() {
+    cat <<USAGE
+
+  Mirza - management script
+
+  Usage:
+    mirza [command] [options]
+
+  Commands:
+    install            Install Mirza
+    update             Update Mirza
+    remove             Remove Mirza
+    migrate            Migrate Free -> Pro
+    menu               Show interactive menu (default)
+
+  Options:
+    --name   <user>    Bot username
+    --token  <token>   Telegram bot token
+    --admin  <id>      Admin chat id
+    --domain <domain>  Domain name (e.g. bot.example.com)
+    --db-user <user>   Database username
+    --db-pass <pass>   Database password
+    --version <tag>    Install/update a specific release tag (e.g. 0.1.7)
+    --channel <name>   Source channel: beta | release | auto
+    -h, --help         Show this help and exit
+
+  Examples:
+    mirza install --channel auto
+    mirza install --name myvpnbot --token 123:ABC --admin 111 --domain bot.example.com --version 0.1.7
+    mirza update --channel release
+    mirza update --version 0.1.6
+
+USAGE
+}
+
 process_arguments() {
+    local cmd="menu"
+    # First non-flag token is the command
     case "$1" in
-        update)
-            # If there is a specific update function logic for Pro, call it here
-            # For now, we can re-run install or a specific update function
-            update_bot
-            ;;
-        remove)
-            remove_bot
-            ;;
-        *)
-            # Default action or Show Menu
-            # If arguments are passed but not recognized (like -v), ignore versioning for Pro
-            # since we only use the main branch.
-            if [ -n "$1" ]; then
-                echo -e "\e[33mNote: Mirza Pro only uses the latest version from GitHub Main branch.\033[0m"
-            fi
-            show_menu
-            ;;
+        install|update|remove|migrate|menu) cmd="$1"; shift ;;
+        -h|--help) print_usage; exit 0 ;;
+        "") cmd="menu" ;;
+        --*) cmd="menu" ;;            # only flags given -> menu, but still parse flags
+        *) cmd="menu" ;;
+    esac
+
+    # Parse remaining flags
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --name)    ARG_NAME="$2";    shift 2 ;;
+            --token)   ARG_TOKEN="$2";   shift 2 ;;
+            --admin)   ARG_ADMIN="$2";   shift 2 ;;
+            --domain)  ARG_DOMAIN="$2";  shift 2 ;;
+            --db-user) ARG_DBUSER="$2";  shift 2 ;;
+            --db-pass) ARG_DBPASS="$2";  shift 2 ;;
+            --version) ARG_VERSION="$2"; shift 2 ;;
+            --channel) ARG_CHANNEL="$2"; shift 2 ;;
+            -h|--help) print_usage; exit 0 ;;
+            *) echo -e "\e[91mUnknown option: $1\033[0m"; print_usage; exit 1 ;;
+        esac
+    done
+
+    case "$cmd" in
+        install) install_bot ;;
+        update)  update_bot ;;
+        remove)  remove_bot ;;
+        migrate) migrate_to_pro ;;
+        menu|*)  show_menu ;;
     esac
 }
-# Call main function
-process_arguments "$1" "$2"
+process_arguments "$@"
