@@ -174,7 +174,7 @@ self_update_script "$@"
 # ── Repo / paths ─────────────────────────────────────────────
 BOT_DIR_DEFAULT="/var/www/html/mirzaprobotconfig"
 CONFIG_FILE_DEFAULT="$BOT_DIR_DEFAULT/config.php"
-GIT_REPO="mahdiMGF2/mirza_pro"
+GIT_REPO="mahdiMGF2/mirzabot"
 LATEST_CACHE="/tmp/.mirza_latest_version"
 IP_CACHE="/tmp/.mirza_server_ip"
 
@@ -1202,25 +1202,6 @@ EOF
     ln -sf /root/install.sh /usr/local/bin/mirza
     self_update_script
 }
-# function install_bot_with_marzban() {
-#     echo -e "\033[41m[IMPORTANT WARNING]\033[0m \033[1;33mMarzban panel is detected on your server. Please make sure to backup the Marzban database before installing Mirza Bot.\033[0m"
-#     read -p "Are you sure you want to install Mirza Bot alongside Marzban? (y/n): " confirm
-#     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-#         echo -e "\e[91mInstallation aborted by user.\033[0m"
-#         exit 0
-#     fi
-#     echo -e "\e[32mChecking Marzban database type...\033[0m"
-#     DB_TYPE=$(detect_database_type)
-#     if [ "$DB_TYPE" != "mysql" ]; then
-#         echo -e "\e[91mError: Your database is $DB_TYPE. To install Mirza Bot, you must use MySQL.\033[0m"
-#         echo -e "\e[93mPlease configure Marzban to use MySQL and try again.\033[0m"
-#         exit 1
-#     fi
-#     echo -e "\e[92mMySQL detected. Proceeding with installation...\033[0m"
-#     # NOTE: The full Marzban installation body was already commented out in the
-#     # original file. It is preserved here unchanged. Re-enable + uncomment it
-#     # before relying on the Marzban-compatible install path.
-# }
 function update_bot() {
     clear
     banner
