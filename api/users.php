@@ -661,9 +661,6 @@ switch ($data['actions'] ?? '') {
         if (!isset($data['token']) || empty($data['token']))
             sendJsonResponse(false, "token empty", [], 200);
         $chec_kbot = select("botsaz", "*", "id_user", $data['chat_id'], "count");
-        $check_bots = select("botsaz", "*", null, null, "count");
-        if ($checkbots >= 15)
-            sendJsonResponse(false, "You are allowed to create 15 representative bots in your bot.");
         if ($chec_kbot != 0)
             sendJsonResponse(false, "You are allowed to build a robot.");
         $getInfoToken = json_decode(file_get_contents("https://api.telegram.org/bot{$data['token']}/getme"), true);
@@ -675,6 +672,7 @@ switch ($data['actions'] ?? '') {
         $admin_ids = json_encode(array(
             $data['chat_id']
         ));
+        $data['chat_id'] = intval($data['chat_id']);
         $destination = dirname(getcwd());
         $dirsource = "$destination/vpnbot/{$data['chat_id']}{$getInfoToken['result']['username']}";
         if (is_dir($dirsource) && !deleteDirectory($dirsource)) {

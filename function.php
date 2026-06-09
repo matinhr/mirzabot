@@ -370,7 +370,7 @@ function update($table, $field, $newValue, $whereField = null, $whereValue = nul
     }
     $logValue = is_scalar($valueToStore) ? $valueToStore : json_encode($valueToStore, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     $logss = "{$table}_{$field}_{$logValue}_{$whereField}_{$whereValue}_{$user['step']}_$date";
-    if ($field != "message_count" || $field != "last_message_time") {
+    if ($field != "message_count" && $field != "last_message_time") {
         file_put_contents('log.txt', "\n" . $logss, FILE_APPEND);
     }
 
@@ -471,8 +471,7 @@ function select($table, $field, $whereField = null, $whereValue = null, $type = 
             $result = $fetched === false ? null : $fetched;
         }
     } catch (PDOException $e) {
-        error_log($e->getMessage());
-        die("Query failed: " . $e->getMessage());
+        error_log("Query failed: " . $e->getMessage());
     }
 
     if ($useCache && $cacheKey !== null) {

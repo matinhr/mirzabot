@@ -9245,11 +9245,6 @@ if (isset($update["inline_query"])) {
 } elseif (preg_match('/createbot_(\w+)/', $datain, $datagetr)) {
     $id_user = $datagetr[1];
     $checkbot = select("botsaz", "*", "id_user", $id_user, "count");
-    $checkbots = select("botsaz", "*", null, null, "count");
-    if ($checkbots >= 15) {
-        sendmessage($from_id, $textbotlang['Admin']['adminphp']['err_agent_bot'], $keyboardadmin, 'HTML');
-        return;
-    }
     if ($checkbot != 0) {
         $textexitsbot = $textbotlang['Admin']['adminphp']['err_notfound_bot_1'];
         sendmessage($from_id, $textexitsbot, $keyboardadmin, 'HTML');

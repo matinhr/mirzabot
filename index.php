@@ -425,7 +425,10 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
-    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = :from_id AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT :start_index, :items_per_page");
+    $stmt->bindParam(':from_id', $from_id, PDO::PARAM_STR);
+    $stmt->bindParam(':start_index', $start_index, PDO::PARAM_INT);
+    $stmt->bindParam(':items_per_page', $items_per_page, PDO::PARAM_INT);
     $stmt->execute();
     if ($setting['statusnamecustom'] == 'onnamecustom') {
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -487,7 +490,10 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
-    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = :from_id AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT :start_index, :items_per_page");
+    $stmt->bindParam(':from_id', $from_id, PDO::PARAM_STR);
+    $stmt->bindParam(':start_index', $start_index, PDO::PARAM_INT);
+    $stmt->bindParam(':items_per_page', $items_per_page, PDO::PARAM_INT);
     $stmt->execute();
     if ($setting['statusnamecustom'] == 'onnamecustom') {
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -550,7 +556,10 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
-    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $previous_page, $items_per_page");
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = :from_id AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT :start_index, :items_per_page");
+    $stmt->bindParam(':from_id', $from_id, PDO::PARAM_STR);
+    $stmt->bindParam(':start_index', $start_index, PDO::PARAM_INT);
+    $stmt->bindParam(':items_per_page', $items_per_page, PDO::PARAM_INT);
     $stmt->execute();
     if ($setting['statusnamecustom'] == 'onnamecustom') {
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -4125,7 +4134,9 @@ if ($user['step'] == "createusertest" || preg_match('/locationtest_(.*)/', $data
         $info_product['Service_time'] = $parts[1];
         $info_product['price_product'] = ($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice);
     } else {
-        $info_product = ($pdo->query("SELECT * FROM product WHERE code_product = '{$user['Processing_value_one']}' AND (Location = '{$userdate['name_panel']}'or Location = '/all') LIMIT 1"))->fetch(PDO::FETCH_ASSOC);
+        $info_product = ($pdo->query("SELECT * FROM product WHERE code_product = :code_product AND (Location = :location OR Location = '/all') LIMIT 1"))->fetch(PDO::FETCH_ASSOC);
+        $info_product->bindParam(':code_product', $user['Processing_value_one'], PDO::PARAM_STR);
+        $info_product->bindParam(':location', $userdate['name_panel'], PDO::PARAM_STR);
     }
     $result = ($SellDiscountlimit['price'] / 100) * $info_product['price_product'];
 
@@ -4345,7 +4356,9 @@ if ($user['step'] == "createusertest" || preg_match('/locationtest_(.*)/', $data
         $info_product['price_product'] = ($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice);
         $info_product['data_limit_reset'] = "no_reset";
     } else {
-        $info_product = ($pdo->query("SELECT * FROM product WHERE code_product = '{$user['Processing_value_one']}' AND (Location = '{$user['Processing_value']}'  or Location = '/all') LIMIT 1"))->fetch(PDO::FETCH_ASSOC);
+        $info_product = ($pdo->query("SELECT * FROM product WHERE code_product = :code_product AND (Location = :location OR Location = '/all') LIMIT 1"))->fetch(PDO::FETCH_ASSOC);
+        $info_product->bindParam(':code_product', $user['Processing_value_one'], PDO::PARAM_STR);
+        $info_product->bindParam(':location', $user['Processing_value'], PDO::PARAM_STR);
     }
     if (empty($info_product['price_product']) || empty($info_product['price_product']))
         return;
@@ -4547,7 +4560,8 @@ if ($user['step'] == "createusertest" || preg_match('/locationtest_(.*)/', $data
 } elseif ($user['step'] == "get_step_payment") {
     if ($datain == "cart_to_offline") {
         $PaySetting = select("PaySetting", "ValuePay", "NamePay", "statuscardautoconfirm", "select")['ValuePay'];
-        $checkpay = $pdo->query("SELECT * FROM Payment_report WHERE id = '$from_id' AND payment_Status = 'Unpaid'");
+        $checkpay = $pdo->query("SELECT * FROM Payment_report WHERE id = :user_id AND payment_Status = 'Unpaid'");
+        $checkpay->bindParam(':user_id', $from_id, PDO::PARAM_STR);
         if (($checkpay)->rowCount() != 0) {
             sendmessage($from_id, $textbotlang['Admin']['SettingPayment']['isSetPay'], null, 'HTML');
             return;
@@ -4570,13 +4584,15 @@ if ($user['step'] == "createusertest" || preg_match('/locationtest_(.*)/', $data
         $card_info = ($cardQuery)->fetch(PDO::FETCH_ASSOC);
         if (!$card_info || empty($card_info['cardnumber']) || empty($card_info['namecard'])) {
             sendmessage($from_id, $textbotlang['extracted']['index_php']['noActiveBankCard'], null, 'HTML');
-            /* freed */ $cardQuery = null;
+            /* freed */
+            $cardQuery = null;
             return;
         }
 
         $card_number = $card_info['cardnumber'];
         $PaySettingname = $card_info['namecard'];
-        /* freed */ $cardQuery = null;
+        /* freed */
+        $cardQuery = null;
         $price_copy = $user['Processing_value'];
         if ($PaySetting == "onautoconfirm") {
             $random_number = rand(0, 2000);
@@ -5342,8 +5358,10 @@ if (preg_match('/Confirmpay_user_(\w+)_(\w+)/', $datain, $dataget)) {
 if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
     $timefivemin = time() - 120;
     $timefivemin = date('Y/m/d H:i:s', intval($timefivemin));
-    $sql = "SELECT * FROM Payment_report WHERE id_user = '$from_id' AND Payment_Method = 'cart to cart' AND at_updated > '$timefivemin'";
+    $sql = "SELECT * FROM Payment_report WHERE id_user = :from_id AND Payment_Method = 'cart to cart' AND at_updated > :timefivemin";
     $stmt = $pdo->prepare($sql);
+    $stmt->bindParam(':from_id', $from_id, PDO::PARAM_STR);
+    $stmt->bindParam(':timefivemin', $timefivemin, PDO::PARAM_STR);
     $stmt->execute();
     $paymentcount = $stmt->rowCount();
     if ($paymentcount != 0 and !in_array($from_id, $admin_ids)) {
@@ -6064,7 +6082,8 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
         sendmessage($from_id, $textbotlang['users']['wheelLuck']['featureDisabled'], null, 'HTML');
         return;
     }
-    $stmt = $pdo->prepare("SELECT * FROM wheel_list  WHERE id_user = '$from_id' ORDER BY time DESC LIMIT 1");
+    $stmt = $pdo->prepare("SELECT * FROM wheel_list  WHERE id_user = :from_id ORDER BY time DESC LIMIT 1");
+    $stmt->bindParam(':from_id', $from_id);
     $stmt->execute();
     $USER = $stmt->fetch(PDO::FETCH_ASSOC);
     $timelast = isset($USER['time']) ? strtotime($USER['time']) : false;
@@ -6093,7 +6112,8 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
     }
     $diceValue = (int) $diceResponse['result']['dice']['value'];
     $dateacc = date('Y/m/d H:i:s');
-    $stmt = $pdo->prepare("SELECT * FROM wheel_list  WHERE id_user = '$from_id' ORDER BY time DESC LIMIT 1");
+    $stmt = $pdo->prepare("SELECT * FROM wheel_list  WHERE id_user = :from_id ORDER BY time DESC LIMIT 1");
+    $stmt->bindParam(':from_id', $from_id);
     $stmt->execute();
     $USER = $stmt->fetch(PDO::FETCH_ASSOC);
     $timelast = isset($USER['time']) ? strtotime($USER['time']) : false;
@@ -6166,7 +6186,11 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
     $page = 1;
     $items_per_page = 20;
     $start_index = ($page - 1) * $items_per_page;
-    $result = $pdo->query("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $result = $pdo->query("SELECT * FROM invoice WHERE id_user = :from_id AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT :start_index, :items_per_page");
+    $result->bindParam(':from_id', $from_id, PDO::PARAM_STR);
+    $result->bindParam(':start_index', $start_index, PDO::PARAM_INT);
+    $result->bindParam(':items_per_page', $items_per_page, PDO::PARAM_INT);
+    $result->execute();
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
@@ -6223,7 +6247,11 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
         $next_page = $page + 1;
     }
     $start_index = ($next_page - 1) * $items_per_page;
-    $result = $pdo->query("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $result = $pdo->query("SELECT * FROM invoice WHERE id_user = :from_id AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') ORDER BY time_sell DESC LIMIT :start_index, :items_per_page");
+    $result->bindParam(':from_id', $from_id, PDO::PARAM_STR);
+    $result->bindParam(':start_index', $start_index, PDO::PARAM_INT);
+    $result->bindParam(':items_per_page', $items_per_page, PDO::PARAM_INT);
+    $result->execute();
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
@@ -6281,7 +6309,11 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
         $previous_page = $page - 1;
     }
     $start_index = ($previous_page - 1) * $items_per_page;
-    $result = $pdo->query("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $previous_page, $items_per_page");
+    $result = $pdo->query("SELECT * FROM invoice WHERE id_user = :from_id AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') ORDER BY time_sell DESC LIMIT :start_index, :items_per_page");
+    $result->bindParam(':from_id', $from_id, PDO::PARAM_STR);
+    $result->bindParam(':start_index', $start_index, PDO::PARAM_INT);
+    $result->bindParam(':items_per_page', $items_per_page, PDO::PARAM_INT);
+    $result->execute();
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
