@@ -3519,6 +3519,9 @@ elseif ($datain == "systemsms") {
 
             $Condition_marzban = "";
             $text_marzban = sprintf($textbotlang['Admin']['adminphp']['ok_select_panel_user_1'], $total_user, $active_users, $System_Stats['version'], $mem_total, $mem_used, $bandwidth, $ListSell, $ListSellSUM, $marzban_list_get['agent']);
+            if ($marzban_list_get['version_panel'] == "1") {
+                $text_marzban = str_replace($textbotlang['keyboard']['marzban'], $textbotlang['keyboard']['passargadPanel'], $text_marzban);
+            }
             sendmessage($from_id, $text_marzban, $optionMarzban, 'HTML');
         } elseif (isset($Check_token['detail']) && $Check_token['detail'] == "Incorrect username or password") {
             $text_marzban = $textbotlang['Admin']['adminphp']['err_invalid_panel_user'];
@@ -8521,6 +8524,7 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
             update("marzban_panel", "inbounds", json_encode($DataUserOut['inbounds']), "name_panel", $user['Processing_value']);
             update("marzban_panel", "proxies", json_encode($DataUserOut['proxies'], true), "name_panel", $user['Processing_value']);
         }
+        sendmessage($from_id, $textbotlang['Admin']['adminphp']['ok_success_set_4'], $optionMarzban, 'HTML');
     } elseif ($panel['type'] == "s_ui") {
         $data = GetClientsS_UI($text, $panel['name_panel']); {
             if (count($data) == 0) {
