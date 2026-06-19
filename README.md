@@ -101,7 +101,7 @@ Ensure you have the following before installation:
 Run the following command in your server terminal:
 
 ```bash
-curl -o install.sh -L https://raw.githubusercontent.com/mahdiMGF2/mirzabot/main/install.sh && bash install.sh
+curl -o install.sh -L https://raw.githubusercontent.com/matinhr/mirzabot/main/install.sh && bash install.sh
 ```
 
 When prompted, **select option 1** to complete the installation.
